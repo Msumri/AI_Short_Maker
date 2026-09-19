@@ -1,0 +1,486 @@
+/* ============================================================
+   GLOBAL
+   ============================================================ */
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+
+    background: #f4f5f7 !important;
+    color: #1f2937 !important;
+
+    font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Roboto,
+        Arial,
+        sans-serif;
+}
+
+body {
+    min-height: 100vh;
+}
+
+.q-page {
+    background: #f4f5f7 !important;
+}
+
+
+/* ============================================================
+   MAIN APPLICATION
+   ============================================================ */
+
+.app {
+    width: 760px;
+    max-width: calc(100vw - 40px);
+
+    margin: 0 auto;
+
+    padding: 30px 0 35px;
+
+    color: #1f2937;
+}
+
+
+/* ============================================================
+   HEADER
+   ============================================================ */
+
+.title-row {
+    width: 100%;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    margin-bottom: 25px;
+}
+
+.title {
+    font-size: 26px;
+    line-height: 1.2;
+
+    font-weight: 700;
+
+    color: #111827 !important;
+}
+
+.local-label {
+    padding: 5px 10px;
+
+    border-radius: 20px;
+
+    background: #eeecff;
+    color: #6258e8 !important;
+
+    font-size: 11px;
+    font-weight: 700;
+
+    letter-spacing: 0.5px;
+}
+
+
+/* ============================================================
+   FORM ROWS
+   ============================================================ */
+
+.form-row {
+    width: 100%;
+
+    min-height: 42px;
+
+    display: flex;
+    flex-direction: row;
+
+    align-items: center;
+
+    gap: 10px;
+
+    margin-bottom: 10px;
+}
+
+.form-group {
+    width: 100%;
+}
+
+
+/* ============================================================
+   LABELS
+   ============================================================ */
+
+.form-label {
+    width: 105px;
+    min-width: 105px;
+
+    font-size: 13px;
+    font-weight: 600;
+
+    color: #374151 !important;
+}
+
+
+/* ============================================================
+   FILE NAMES
+   ============================================================ */
+
+.selected-name {
+    display: block;
+
+    max-width: 430px;
+
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+
+    font-size: 13px;
+
+    color: #6b7280 !important;
+}
+
+
+/* ============================================================
+   HELPER TEXT
+   ============================================================ */
+
+.inline-help {
+    font-size: 12px;
+
+    color: #9ca3af !important;
+}
+
+.layout-ok {
+    color: #15803d !important;
+}
+
+.layout-disabled {
+    color: #b45309 !important;
+}
+
+
+/* ============================================================
+   INPUT SIZES
+   ============================================================ */
+
+.wide-input {
+    flex: 1;
+
+    max-width: 520px;
+}
+
+.small-input {
+    width: 95px;
+}
+
+.small-label {
+    margin-left: 10px;
+
+    font-size: 13px;
+    font-weight: 600;
+
+    color: #374151 !important;
+}
+
+.layout-input {
+    width: 365px;
+}
+
+
+/* ============================================================
+   QUASAR INPUTS
+   ============================================================ */
+
+.q-field {
+    font-size: 13px !important;
+}
+
+.q-field__control {
+    min-height: 38px !important;
+
+    background: #ffffff !important;
+
+    border-radius: 6px !important;
+}
+
+.q-field__native,
+.q-field__input {
+    color: #1f2937 !important;
+}
+
+.q-field__label {
+    color: #6b7280 !important;
+}
+
+.q-field__control:before {
+    border: 1px solid #d1d5db !important;
+}
+
+.q-field__control:hover:before {
+    border-color: #9ca3af !important;
+}
+
+.q-field--focused .q-field__control:after {
+    border-color: #6c63ff !important;
+}
+
+.q-select__dropdown-icon {
+    color: #6b7280 !important;
+}
+
+
+/* ============================================================
+   DROPDOWN
+   ============================================================ */
+
+.q-menu {
+    background: #ffffff !important;
+
+    border: 1px solid #e5e7eb !important;
+
+    box-shadow:
+        0 8px 20px rgba(0, 0, 0, 0.10) !important;
+}
+
+.q-item {
+    min-height: 38px !important;
+
+    color: #374151 !important;
+
+    font-size: 13px !important;
+}
+
+.q-item:hover {
+    background: #f3f4f6 !important;
+}
+
+.q-item--active {
+    background: #f0efff !important;
+
+    color: #5b50dc !important;
+}
+
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+
+.q-btn {
+    min-height: 38px !important;
+
+    padding: 0 14px !important;
+
+    border-radius: 6px !important;
+
+    text-transform: none !important;
+
+    font-size: 13px !important;
+    font-weight: 600 !important;
+}
+
+.q-btn--outline {
+    color: #4b5563 !important;
+}
+
+.q-btn--outline:before {
+    border-color: #cfd3da !important;
+}
+
+.q-btn--outline:hover:before {
+    border-color: #6c63ff !important;
+}
+
+
+/* ============================================================
+   SWITCH
+   ============================================================ */
+
+.q-toggle {
+    font-size: 13px !important;
+}
+
+.q-toggle__label {
+    color: #374151 !important;
+}
+
+
+/* ============================================================
+   DISABLED SECTIONS
+   ============================================================ */
+
+.disabled-row {
+    opacity: 0.45;
+}
+
+.disabled-row * {
+    pointer-events: none;
+}
+
+
+/* ============================================================
+   SEPARATOR
+   ============================================================ */
+
+.form-separator {
+    width: 100%;
+
+    margin: 14px 0 16px;
+
+    background: #e1e4e8 !important;
+}
+
+
+/* ============================================================
+   MAIN PROCESS BUTTON
+   ============================================================ */
+
+.process-button {
+    width: 100%;
+
+    height: 45px;
+
+    margin-top: 2px;
+
+    border-radius: 7px !important;
+
+    font-size: 14px !important;
+    font-weight: 650 !important;
+}
+
+
+/* ============================================================
+   PROGRESS
+   ============================================================ */
+
+.progress-info {
+    width: 100%;
+
+    display: flex;
+
+    align-items: center;
+    justify-content: space-between;
+
+    margin-top: 18px;
+    margin-bottom: 6px;
+}
+
+.progress-text {
+    font-size: 12px;
+
+    color: #6b7280 !important;
+}
+
+.progress-bar {
+    width: 100%;
+
+    height: 7px !important;
+
+    border-radius: 10px !important;
+
+    overflow: hidden !important;
+}
+
+
+/* ============================================================
+   STATUS
+   ============================================================ */
+
+.status-normal,
+.status-success,
+.status-error {
+    width: 100%;
+
+    margin-top: 9px;
+
+    text-align: center;
+
+    font-size: 12px;
+}
+
+.status-normal {
+    color: #6b7280 !important;
+}
+
+.status-success {
+    color: #15803d !important;
+}
+
+.status-error {
+    color: #dc2626 !important;
+}
+
+
+/* ============================================================
+   DIALOG
+   ============================================================ */
+
+.confirm-dialog {
+    width: 400px;
+    max-width: calc(100vw - 40px);
+
+    padding: 24px !important;
+
+    border-radius: 9px !important;
+}
+
+.confirm-title {
+    font-size: 18px;
+
+    font-weight: 700;
+
+    color: #111827 !important;
+}
+
+.confirm-text {
+    margin-top: 8px;
+
+    font-size: 13px;
+
+    line-height: 1.5;
+
+    color: #6b7280 !important;
+}
+
+.confirm-buttons {
+    width: 100%;
+
+    justify-content: flex-end;
+
+    margin-top: 20px;
+}
+
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 700px) {
+
+    .app {
+        width: auto;
+        max-width: calc(100vw - 28px);
+
+        padding-top: 22px;
+    }
+
+    .form-row {
+        flex-wrap: wrap;
+    }
+
+    .form-label {
+        width: 95px;
+        min-width: 95px;
+    }
+
+    .wide-input {
+        max-width: calc(100% - 105px);
+    }
+
+    .layout-input {
+        width: calc(100% - 105px);
+    }
+
+    .selected-name {
+        max-width: 300px;
+    }
+}
