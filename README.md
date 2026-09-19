@@ -6,7 +6,7 @@ A local Python application for generating and rendering short-form videos using 
 [![How to use AI Short Cutter](https://img.youtube.com/vi/o3o_8Ha2pG0/maxresdefault.jpg)](https://www.youtube.com/watch?v=o3o_8Ha2pG0)
 
 ## How to install Windows 
-[![AI Short Cutter Tutorial](https://img.youtube.com/vi/o3o_8Ha2pG0/maxresdefault.jpg)](https://youtu.be/o3o_8Ha2pG0)
+[![AI Short Cutter Tutorial](https://img.youtube.com/vi/zfmoqbuprLI/maxresdefault.jpg)](https://youtu.be/zfmoqbuprLI)
 
 ## Features
 
