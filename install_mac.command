@@ -1,6 +1,12 @@
+```bash
 #!/bin/bash
 
 set -e
+
+# ============================================================
+# AI VIDEO CUTTER - MAC INSTALLER
+# Double-click this file to install
+# ============================================================
 
 echo
 echo "=========================================="
@@ -9,10 +15,50 @@ echo "=========================================="
 echo
 
 # ============================================================
+# FIND INSTALL LOCATION
+# ============================================================
+
+INSTALL_DIR="$HOME/AI_Short_Maker"
+REPO_URL="https://github.com/Msumri/AI_Short_Maker.git"
+
+echo "Install location:"
+echo "$INSTALL_DIR"
+echo
+
+
+# ============================================================
+# CHECK GIT
+# ============================================================
+
+echo "[1/6] Checking Git..."
+echo
+
+if ! command -v git >/dev/null 2>&1; then
+    echo "Git was not found."
+    echo
+    echo "Installing Xcode Command Line Tools..."
+    echo
+
+    xcode-select --install
+
+    echo
+    echo "Please complete the Xcode Command Line Tools installation,"
+    echo "then run this installer again."
+    echo
+
+    read -p "Press Enter to close..."
+    exit 1
+fi
+
+echo "Git found."
+echo
+
+
+# ============================================================
 # CHECK PYTHON
 # ============================================================
 
-echo "[1/5] Checking Python..."
+echo "[2/6] Checking Python..."
 echo
 
 if command -v python3 >/dev/null 2>&1; then
@@ -23,6 +69,7 @@ else
     echo
     echo "Please install Python 3.11 or newer."
     echo
+    read -p "Press Enter to close..."
     exit 1
 fi
 
@@ -34,25 +81,56 @@ echo
 
 
 # ============================================================
+# DOWNLOAD / UPDATE PROJECT
+# ============================================================
+
+echo "[3/6] Getting AI Video Cutter..."
+echo
+
+if [ -d "$INSTALL_DIR/.git" ]; then
+
+    echo "Existing installation found."
+    echo "Updating..."
+    echo
+
+    cd "$INSTALL_DIR"
+    git pull
+
+else
+
+    echo "Downloading AI Video Cutter..."
+    echo
+
+    rm -rf "$INSTALL_DIR"
+
+    git clone "$REPO_URL" "$INSTALL_DIR"
+
+    cd "$INSTALL_DIR"
+
+fi
+
+echo
+echo "Project ready."
+echo
+
+
+# ============================================================
 # CREATE VIRTUAL ENVIRONMENT
 # ============================================================
 
-echo "[2/5] Creating virtual environment..."
+echo "[4/6] Creating virtual environment..."
 echo
 
 if [ ! -d ".venv" ]; then
+
     $PYTHON -m venv .venv
 
-    if [ $? -ne 0 ]; then
-        echo
-        echo "ERROR: Could not create the virtual environment."
-        echo
-        exit 1
-    fi
-
     echo "Virtual environment created."
+
 else
+
     echo "Virtual environment already exists."
+
 fi
 
 echo
@@ -62,7 +140,7 @@ echo
 # ACTIVATE VIRTUAL ENVIRONMENT
 # ============================================================
 
-echo "[3/5] Activating virtual environment..."
+echo "Activating virtual environment..."
 echo
 
 source .venv/bin/activate
@@ -75,7 +153,7 @@ echo
 # INSTALL PYTHON DEPENDENCIES
 # ============================================================
 
-echo "[4/5] Installing Python dependencies..."
+echo "Installing Python dependencies..."
 echo
 
 python -m pip install --upgrade pip
@@ -87,10 +165,10 @@ echo
 
 
 # ============================================================
-# CHECK / INSTALL HOMEBREW
+# CHECK / INSTALL FFMPEG
 # ============================================================
 
-echo "[5/5] Checking FFmpeg..."
+echo "[5/6] Checking FFmpeg..."
 echo
 
 if command -v ffmpeg >/dev/null 2>&1; then
@@ -132,7 +210,7 @@ else
             /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
             # ------------------------------------------------
-            # Refresh PATH for Apple Silicon
+            # Apple Silicon
             # ------------------------------------------------
 
             if [ -x "/opt/homebrew/bin/brew" ]; then
@@ -140,7 +218,7 @@ else
             fi
 
             # ------------------------------------------------
-            # Refresh PATH for Intel Macs
+            # Intel Mac
             # ------------------------------------------------
 
             if [ -x "/usr/local/bin/brew" ]; then
@@ -148,12 +226,17 @@ else
             fi
 
             if ! command -v brew >/dev/null 2>&1; then
+
                 echo
-                echo "ERROR: Homebrew was installed but could not be found."
+                echo "ERROR: Homebrew was installed but could not"
+                echo "be found by this installer."
                 echo
-                echo "Please restart Terminal and run this installer again."
+                echo "Please restart Terminal and run the installer again."
                 echo
+
+                read -p "Press Enter to close..."
                 exit 1
+
             fi
 
             echo
@@ -170,6 +253,7 @@ else
             echo "Please install FFmpeg manually."
             echo
 
+            read -p "Press Enter to close..."
             exit 1
 
         fi
@@ -188,33 +272,50 @@ echo "Verifying FFmpeg..."
 echo
 
 if command -v ffmpeg >/dev/null 2>&1; then
+
     echo "FFmpeg installed successfully."
     ffmpeg -version | head -n 1
+
 else
+
     echo
     echo "ERROR: FFmpeg could not be installed."
     echo
+
+    read -p "Press Enter to close..."
     exit 1
+
 fi
 
 
 # ============================================================
-# FINISHED
+# MAKE RUN SCRIPT EXECUTABLE
 # ============================================================
+
+echo
+echo "[6/6] Finalizing installation..."
+echo
+
+if [ -f "$INSTALL_DIR/run_mac.sh" ]; then
+    chmod +x "$INSTALL_DIR/run_mac.sh"
+fi
 
 echo
 echo "=========================================="
 echo "       Installation Complete!"
 echo "=========================================="
 echo
-echo "The AI Video Cutter is ready."
+echo "AI Video Cutter has been installed to:"
+echo
+echo "    $INSTALL_DIR"
 echo
 echo "To start the application:"
 echo
+echo "    cd \"$INSTALL_DIR\""
 echo "    ./run_mac.sh"
 echo
-echo "Or manually:"
+echo "=========================================="
 echo
-echo "    source .venv/bin/activate"
-echo "    python app.py"
-echo
+
+read -p "Press Enter to close..."
+```
