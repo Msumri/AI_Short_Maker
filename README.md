@@ -2,6 +2,13 @@
 
 A local Python application for generating and rendering short-form videos using OpenRouter, MoviePy, and FFmpeg.
 
+## How to use video 
+[![Watch the video](https://youtube.com)](https://www.youtube.com/watch?v=o3o_8Ha2pG0)
+
+## How to install Windows 
+[![Watch the video](https://youtube.com)](https://www.youtube.com/watch?v=o3o_8Ha2pG0)
+
+
 ## Features
 
 * Local NiceGUI interface
