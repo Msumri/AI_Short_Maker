@@ -5,9 +5,15 @@ A local Python application for generating and rendering short-form videos using 
 ## How to use video 
 [![How to use AI Short Cutter](https://img.youtube.com/vi/o3o_8Ha2pG0/maxresdefault.jpg)](https://www.youtube.com/watch?v=o3o_8Ha2pG0)
 
-## How to install Windows 
+## How to install vidoes
+Windows :
 [![AI Short Cutter Tutorial](https://img.youtube.com/vi/zfmoqbuprLI/maxresdefault.jpg)](https://youtu.be/zfmoqbuprLI)
 
+Mac: 
+[![AI Short Cutter Tutorial](https://img.youtube.com/vi/5pgaiIGPPKs/maxresdefault.jpg)](https://youtu.be/5pgaiIGPPKs)
+
+Linux:
+Comming soon 
 ## Features
 
 * Local NiceGUI interface
