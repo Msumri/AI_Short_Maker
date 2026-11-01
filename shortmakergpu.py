@@ -98,7 +98,7 @@ def detect_gpu():
             if "nvidia" in gpu_info:
 
                 print(
-                    "[GPU] NVIDIA detected → CUDA/NVENC",
+                    "[GPU] NVIDIA detected -> CUDA/NVENC",
                     flush=True
                 )
 
@@ -108,7 +108,7 @@ def detect_gpu():
             if "amd" in gpu_info or "radeon" in gpu_info:
 
                 print(
-                    "[GPU] AMD detected → AMF",
+                    "[GPU] AMD detected -> AMF",
                     flush=True
                 )
 
@@ -143,7 +143,7 @@ def detect_gpu():
             if "nvidia" in gpu_info:
 
                 print(
-                    "[GPU] NVIDIA detected → CUDA/NVENC",
+                    "[GPU] NVIDIA detected -> CUDA/NVENC",
                     flush=True
                 )
 
@@ -170,7 +170,7 @@ def detect_gpu():
     # ---------------------------------------------------------
 
     print(
-        "[GPU] No supported GPU detected → CPU",
+        "[GPU] No supported GPU detected -> CPU",
         flush=True
     )
 
@@ -878,7 +878,7 @@ def cut_videos(video_segments,video_path ):
         )
 
         print(
-            f"{seg['start_time']} → "
+            f"{seg['start_time']} -> "
             f"{seg['end_time']}",
             flush=True
         )
