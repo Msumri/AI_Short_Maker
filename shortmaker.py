@@ -100,29 +100,56 @@ def cut_video_segment(input_file, output_file, start_time, end_time, layout_styl
             
             # 4. Composite them together, telling the video clip to sit dead center
             final_clip = CompositeVideoClip([
-                background, 
+                background,
                 resized_clip.with_position("center")
             ])
-       
-    
-        
-        
+        else:
+            # "Do Not Crop (Keep Original Aspect Ratio)" and any unknown value:
+            # keep the original framing, only scale down if wider than target.
+            clip_width, clip_height = cut_clip.size
+
+            if clip_width > target_width:
+                scaled = cut_clip.resized(width=target_width)
+            else:
+                scaled = cut_clip
+
+            # H.264 encoders (h264_amf, h264_nvenc, libx264) reject odd
+            # dimensions. Scaling 1920x1080 down to width 1080 yields an odd
+            # height (607), so force both sides to be even.
+            width, height = scaled.size
+            width -= width % 2
+            height -= height % 2
+
+            if (width, height) != scaled.size:
+                final_clip = scaled.resized((width, height))
+            else:
+                final_clip = scaled
+
         # 6. Extract bitrate safely
         # original_bitrate = f"{int(video.reader.bitrate / 1000)}k" if video.reader.bitrate else "5000k"
         
         ffmpeg_extra_params = ["-pix_fmt", "yuv420p"]
+
+        # MoviePy always emits "-preset <preset>" before ffmpeg_params, so the
+        # value must be valid for the selected encoder. h264_amf rejects
+        # "medium" (it only accepts balanced/speed/quality/high_quality).
+        preset = "medium"
+
         if codec == "h264_nvenc":
             ffmpeg_extra_params += ["-preset", "p4", "-tune", "hq"]
         elif codec == "h264_amf":
+            preset = "speed"
             ffmpeg_extra_params += ["-quality", "speed"]
         elif codec == "h264_videotoolbox":
+            preset = "medium"
             ffmpeg_extra_params += ["-realtime", "true"]
         # 7. Export the final short using your GooeyLogger
         final_clip.write_videofile(
             output_file,
-            fps=video.fps, 
+            fps=video.fps,
             codec=codec,
             audio_codec="aac",
+            preset=preset,
             #bitrate=original_bitrate,
             ffmpeg_params=ffmpeg_extra_params,
         )
@@ -555,7 +582,7 @@ def cut_videos(video_segments,video_path, layout_style ):
         )
 
         print(
-            f"{seg['start_time']} → "
+            f"{seg['start_time']} -> "
             f"{seg['end_time']}",
             flush=True
         )

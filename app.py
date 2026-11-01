@@ -30,7 +30,13 @@ def load_settings():
             "r",
             encoding="utf-8",
         ) as file:
-            return json.load(file)
+            content = file.read().strip()
+
+        # An empty file (as shipped in the repo) is not valid JSON.
+        if not content:
+            return {}
+
+        return json.loads(content)
 
     except Exception as e:
         print(f"[WARNING] Could not load settings: {e}")
