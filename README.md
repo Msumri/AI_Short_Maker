@@ -346,10 +346,25 @@ NiceGUI will start a local web server.
 Open the address:
 
 ```text
-http://localhost:8080
+http://localhost:8081
 ```
 
 in your browser.
+
+If port 8081 is already in use, set a different one before starting:
+
+### Windows
+
+```cmd
+set AI_SHORT_MAKER_PORT=8082
+python app.py
+```
+
+### macOS / Linux
+
+```bash
+AI_SHORT_MAKER_PORT=8082 python app.py
+```
 
 ---
 
@@ -599,3 +614,31 @@ ffmpeg: command not found
 FFmpeg is either not installed or is not available through PATH.
 
 Install FFmpeg and restart your terminal.
+
+---
+
+## The browser shows a different application
+
+If opening the app address shows some other service (for example a Docker
+container or another dev server), that service is already using the port.
+
+Start the app on a free port instead:
+
+### Windows
+
+```cmd
+set AI_SHORT_MAKER_PORT=8082
+python app.py
+```
+
+### macOS / Linux
+
+```bash
+AI_SHORT_MAKER_PORT=8082 python app.py
+```
+
+Then open the port you chose:
+
+```text
+http://localhost:8082
+```

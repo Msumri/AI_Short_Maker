@@ -334,10 +334,25 @@ NiceGUI will start a local web server.
 Open the address:
 
 ```text
-http://localhost:8080
+http://localhost:8081
 ```
 
 in your browser.
+
+If port 8081 is already in use, set a different one before starting:
+
+### Windows
+
+```cmd
+set AI_SHORT_MAKER_PORT=8082
+python app.py
+```
+
+### macOS / Linux
+
+```bash
+AI_SHORT_MAKER_PORT=8082 python app.py
+```
 
 ---
 
