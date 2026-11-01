@@ -227,11 +227,216 @@ def timestamp_to_seconds(timestamp):
     )
 
 
+# ---------------------------------------------------------
+# Layouts
+# ---------------------------------------------------------
+
+OUTPUT_WIDTH = 1080
+OUTPUT_HEIGHT = 1920
+
+LAYOUT_ORIGINAL = "original"
+LAYOUT_CROP = "crop"
+LAYOUT_BLUR = "blur"
+LAYOUT_CAM = "cam"
+
+# Fraction of the output height used by the webcam band.
+CAM_BAND_RATIO = 0.30
+
+# Fallback webcam region, in source pixels, used when the caller does not
+# supply one. Bottom-left corner, which is where most gameplay overlays sit.
+DEFAULT_CAM = {"x": 20, "y": 520, "w": 320, "h": 180}
+
+# Fallback content region: the whole frame.
+DEFAULT_CONTENT = {"x": 0, "y": 0, "w": 1280, "h": 720}
+
+# Colour handling. The source is bt709 limited-range; without these the
+# filter graph emits yuvj420p full-range and the output looks washed out
+# and blue-tinted.
+COLOR_PARAMS = [
+    "-pix_fmt", "yuv420p",
+    "-color_range", "tv",
+    "-colorspace", "bt709",
+    "-color_primaries", "bt709",
+    "-color_trc", "bt709",
+]
+
+# Maps the labels shown in the UI to the internal layout names.
+LAYOUT_MAP = {
+    "Do Not Crop (Keep Original Aspect Ratio)": LAYOUT_ORIGINAL,
+    "Center Crop (9:16 Full Screen)": LAYOUT_CROP,
+    "Fit with Blurred Background": LAYOUT_BLUR,
+    "Shorts with Cam (9:16)": LAYOUT_CAM,
+}
+
+
+def normalize_layout(layout):
+    """Accept a UI label or an internal name; return an internal name."""
+
+    if not layout:
+        return LAYOUT_ORIGINAL
+
+    if layout in LAYOUT_MAP:
+        return LAYOUT_MAP[layout]
+
+    if layout in (
+        LAYOUT_ORIGINAL,
+        LAYOUT_CROP,
+        LAYOUT_BLUR,
+        LAYOUT_CAM,
+    ):
+        return layout
+
+    raise ValueError(f"Unknown layout: {layout}")
+
+
+# How a region is fitted into its band.
+#   fill -> scale to cover the band, cropping the overflow (no black bars)
+#   fit  -> scale to fit inside the band, adding black bars (nothing cropped)
+FIT_FILL = "fill"
+FIT_CONTAIN = "fit"
+
+FIT_MAP = {
+    "Fill (may crop)": FIT_FILL,
+    "Fit (may add bars)": FIT_CONTAIN,
+}
+
+
+def normalize_fit(fit):
+    """Accept a UI label or an internal name; return an internal name."""
+
+    if not fit:
+        return FIT_FILL
+
+    if fit in FIT_MAP:
+        return FIT_MAP[fit]
+
+    if fit in (FIT_FILL, FIT_CONTAIN):
+        return fit
+
+    return FIT_FILL
+
+
+def _fit_chain(dst_w, dst_h, fit):
+    """FFmpeg chain that scales a stream into a dst_w x dst_h box."""
+
+    if normalize_fit(fit) == FIT_CONTAIN:
+        return (
+            f"scale={dst_w}:{dst_h}"
+            f":force_original_aspect_ratio=decrease,"
+            f"pad={dst_w}:{dst_h}:(ow-iw)/2:(oh-ih)/2:color=black"
+        )
+
+    return (
+        f"scale={dst_w}:{dst_h}"
+        f":force_original_aspect_ratio=increase,"
+        f"crop={dst_w}:{dst_h}"
+    )
+
+
+def _merge_box(default, override):
+    """Overlay a user-supplied region on top of the default one."""
+
+    box = dict(default)
+
+    if override:
+        box.update(
+            {
+                key: value
+                for key, value in override.items()
+                if value is not None
+            }
+        )
+
+    return box
+
+
+def build_video_filter(
+    layout,
+    cam=None,
+    content=None,
+    band_ratio=None,
+    cam_fit=None,
+    content_fit=None,
+):
+    """
+    Build the FFmpeg filter graph for a layout.
+
+    Returns (filter_complex, output_label). For the passthrough layout both
+    are None, meaning the input stream is mapped straight through, which is
+    the fastest path and keeps the original resolution.
+    """
+
+    layout = normalize_layout(layout)
+
+    if band_ratio is None:
+        band_ratio = CAM_BAND_RATIO
+
+    # Keep the band within sane limits and even, so the encoder accepts it.
+    band_ratio = max(0.10, min(0.70, float(band_ratio)))
+
+    if layout == LAYOUT_ORIGINAL:
+        return None, None
+
+    if layout == LAYOUT_CROP:
+        return (
+            f"[0:v]scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}"
+            f":force_original_aspect_ratio=increase,"
+            f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},"
+            f"setsar=1[out]",
+            "[out]",
+        )
+
+    if layout == LAYOUT_BLUR:
+        return (
+            f"[0:v]scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}"
+            f":force_original_aspect_ratio=increase,"
+            f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},"
+            f"gblur=sigma=25,eq=brightness=-0.15,setsar=1[bg];"
+            f"[0:v]scale={OUTPUT_WIDTH}:-2,setsar=1[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2[out]",
+            "[out]",
+        )
+
+    if layout == LAYOUT_CAM:
+
+        cam_box = _merge_box(DEFAULT_CAM, cam)
+        content_box = _merge_box(DEFAULT_CONTENT, content)
+
+        top_h = int(OUTPUT_HEIGHT * band_ratio)
+        top_h -= top_h % 2
+        bottom_h = OUTPUT_HEIGHT - top_h
+
+        return (
+            # Webcam: cut the region out, then fit it into the top band.
+            f"[0:v]crop={cam_box['w']}:{cam_box['h']}"
+            f":{cam_box['x']}:{cam_box['y']},"
+            f"{_fit_chain(OUTPUT_WIDTH, top_h, cam_fit)},setsar=1[cam];"
+            # Content: cut its region out, then fit it into the bottom band.
+            f"[0:v]crop={content_box['w']}:{content_box['h']}"
+            f":{content_box['x']}:{content_box['y']},"
+            f"{_fit_chain(OUTPUT_WIDTH, bottom_h, content_fit)},setsar=1[content];"
+            # Compose onto a vertical canvas.
+            f"color=c=black:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}"
+            f":r=30,format=yuv420p[bg];"
+            f"[bg][cam]overlay=0:0:format=auto[t1];"
+            f"[t1][content]overlay=0:{top_h}:format=auto,"
+            f"format=yuv420p[out]",
+            "[out]",
+        )
+
+    raise ValueError(f"Unknown layout: {layout}")
+
+
+
 def cut_video_segment(
     input_file,
     output_file,
     start_time,
     end_time,
+    layout=None,
+    cam=None,
+    content=None,
+    band_ratio=None,
 ):
     ffmpeg = get_ffmpeg_path()
     gpu_type = detect_gpu()
@@ -295,13 +500,35 @@ def cut_video_segment(
     # NO VIDEO FILTER
     # ---------------------------------------------------------
 
-    command += [
-        "-map",
-        "0:v:0",
+    filter_complex, output_label = build_video_filter(
+        layout, cam, content, band_ratio
+    )
 
-        "-map",
-        "0:a?",
-    ]
+    if filter_complex:
+
+        print(
+            f"[GPU] Layout: {normalize_layout(layout)}",
+            flush=True
+        )
+
+        command += [
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            output_label,
+            "-map",
+            "0:a?",
+        ]
+
+    else:
+
+        command += [
+            "-map",
+            "0:v:0",
+
+            "-map",
+            "0:a?",
+        ]
 
     # ---------------------------------------------------------
     # Video encoder
@@ -352,6 +579,11 @@ def cut_video_segment(
     # ---------------------------------------------------------
     # Audio + progress
     # ---------------------------------------------------------
+
+    # Only needed when a filter graph ran; the passthrough path already
+    # carries the source's own colour metadata.
+    if filter_complex:
+        command += COLOR_PARAMS
 
     command += [
         "-c:a",
@@ -906,7 +1138,14 @@ SCRIPT:
 # Cut videos
 # --------------------------------------------------
 
-def cut_videos(video_segments,video_path ):
+def cut_videos(
+    video_segments,
+    video_path,
+    layout=None,
+    cam=None,
+    content=None,
+    band_ratio=None,
+):
     os.makedirs(
             "output",
             exist_ok=True
@@ -942,6 +1181,10 @@ def cut_videos(video_segments,video_path ):
             output_name,
             seg["start_time"],
             seg["end_time"],
+            layout=layout,
+            cam=cam,
+            content=content,
+            band_ratio=band_ratio,
         )
 
 
