@@ -976,3 +976,48 @@ body {
     font-size: 11px;
     color: var(--danger);
 }
+
+/* ============================================================
+   REGION KEYFRAMES
+   ============================================================ */
+
+.keyframe-card {
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 8px;
+    width: 100%;
+}
+
+.keyframe-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.keyframe-icon {
+    color: var(--orange);
+    font-size: 18px;
+}
+
+.keyframe-time {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--orange);
+    flex: 1;
+}
+
+.keyframe-details {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-left: 26px;
+}
+
+.keyframe-details .inline-help {
+    font-size: 11px;
+    margin: 0;
+}

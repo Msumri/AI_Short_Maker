@@ -258,6 +258,39 @@ def get_ffmpeg():
     )
 
 
+def has_audio_stream(path):
+    """Check if a video file has an audio stream."""
+    
+    ffmpeg = get_ffmpeg()
+    ffprobe = shutil.which("ffprobe")
+    
+    if not ffprobe:
+        candidate = os.path.join(
+            os.path.dirname(ffmpeg), "ffprobe.exe"
+        )
+        ffprobe = candidate if os.path.exists(candidate) else ffmpeg
+    
+    result = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    
+    return result.stdout.strip() == "audio"
+
+
 def trim_video(input_path, output_path, ranges, duration=None,
                progress=None):
     """
@@ -278,26 +311,48 @@ def trim_video(input_path, output_path, ranges, duration=None,
         return plan
 
     ffmpeg = get_ffmpeg()
+    
+    # Check if the video has audio
+    has_audio = has_audio_stream(input_path)
 
     # Build "trim each kept range, then concat" in one pass.
     parts = []
     concat_inputs = []
 
     for i, (start, end) in enumerate(plan["kept"]):
-        parts.append(
+        # Video part
+        video_filter = (
             f"[0:v]trim=start={start:.3f}:end={end:.3f},"
-            f"setpts=PTS-STARTPTS[v{i}];"
-            f"[0:a]atrim=start={start:.3f}:end={end:.3f},"
-            f"asetpts=PTS-STARTPTS[a{i}]"
+            f"setpts=PTS-STARTPTS[v{i}]"
         )
-        concat_inputs.append(f"[v{i}][a{i}]")
+        
+        if has_audio:
+            # Audio part
+            audio_filter = (
+                f"[0:a]atrim=start={start:.3f}:end={end:.3f},"
+                f"asetpts=PTS-STARTPTS[a{i}]"
+            )
+            parts.append(f"{video_filter};{audio_filter}")
+            concat_inputs.append(f"[v{i}][a{i}]")
+        else:
+            parts.append(video_filter)
+            concat_inputs.append(f"[v{i}]")
 
-    filter_complex = (
-        ";".join(parts)
-        + ";"
-        + "".join(concat_inputs)
-        + f"concat=n={len(plan['kept'])}:v=1:a=1[outv][outa]"
-    )
+    # Build the concat filter
+    if has_audio:
+        filter_complex = (
+            ";".join(parts)
+            + ";"
+            + "".join(concat_inputs)
+            + f"concat=n={len(plan['kept'])}:v=1:a=1[outv][outa]"
+        )
+    else:
+        filter_complex = (
+            ";".join(parts)
+            + ";"
+            + "".join(concat_inputs)
+            + f"concat=n={len(plan['kept'])}:v=1:a=0[outv]"
+        )
 
     command = [
         ffmpeg,
@@ -308,20 +363,32 @@ def trim_video(input_path, output_path, ranges, duration=None,
         filter_complex,
         "-map",
         "[outv]",
-        "-map",
-        "[outa]",
     ]
+    
+    if has_audio:
+        command += ["-map", "[outa]"]
 
     command += encoder_args()
+    
+    if has_audio:
+        command += [
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+        ]
+    
     command += [
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
         "-movflags",
         "+faststart",
         output_path,
     ]
+
+    # Debug: print the command being executed
+    print(f"[TRIM] Executing FFmpeg command:")
+    print(f"[TRIM] {' '.join(command)}")
+    print(f"[TRIM] Has audio: {has_audio}")
+    print(f"[TRIM] Kept ranges: {plan['kept']}")
 
     process = subprocess.Popen(
         command,
@@ -330,18 +397,33 @@ def trim_video(input_path, output_path, ranges, duration=None,
         universal_newlines=True,
         bufsize=1,
     )
-
+    
+    output_lines = []
     for line in process.stdout:
+        output_lines.append(line)
+        # Print progress to console so user can see it's working
+        if "frame=" in line or "time=" in line:
+            print(f"[TRIM] {line.strip()}", flush=True)
         if progress and line.startswith("frame="):
             progress(line.strip())
 
     process.wait()
 
     if process.returncode != 0:
-        raise RuntimeError(
-            f"FFmpeg failed while trimming (exit {process.returncode})."
-        )
+        # Include FFmpeg output in the error for debugging
+        error_msg = "FFmpeg failed while trimming"
+        if output_lines:
+            # Get last 10 lines of output for debugging
+            last_lines = "".join(output_lines[-10:])
+            error_msg += f" (exit {process.returncode}):\n{last_lines}"
+        else:
+            error_msg += f" (exit {process.returncode})."
+        
+        raise RuntimeError(error_msg)
 
+    print(f"[TRIM] Trimming completed successfully!")
+    print(f"[TRIM] Output written to: {output_path}")
+    
     return plan
 
 

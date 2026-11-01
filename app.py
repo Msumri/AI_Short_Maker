@@ -1,4 +1,4 @@
-import os
+﻿import os
 import io
 import json
 import asyncio
@@ -230,6 +230,82 @@ clip_run = {"active": False, "cancel": False}
 cam_region = config["cam"]
 content_region = config["content"]
 
+# Region keyframes - allows different regions at different timestamps
+region_keyframes = []
+preview_timestamp = 5.0  # Current preview timestamp
+
+
+# ============================================================
+# REGION KEYFRAMES (Multiple regions over time)
+# ============================================================
+
+def get_region_at_time(timestamp, region_type='cam'):
+    """
+    Get the region (cam or content) at a specific timestamp.
+    
+    Uses the keyframe at or before the timestamp. If no keyframe exists
+    before the timestamp, uses the default region.
+    """
+    
+    if not region_keyframes:
+        # No keyframes, use default
+        return cam_region if region_type == 'cam' else content_region
+    
+    # Sort keyframes by timestamp
+    sorted_kf = sorted(region_keyframes, key=lambda k: k['timestamp'])
+    
+    # Find the keyframe at or before this timestamp
+    applicable_kf = None
+    for kf in sorted_kf:
+        if kf['timestamp'] <= timestamp:
+            applicable_kf = kf
+        else:
+            break
+    
+    if applicable_kf:
+        return applicable_kf[region_type]
+    else:
+        # Before first keyframe, use default
+        return cam_region if region_type == 'cam' else content_region
+
+
+def add_region_keyframe(timestamp, cam, content):
+    """Add or update a region keyframe at the specified timestamp."""
+    
+    # Check if keyframe already exists at this timestamp
+    for i, kf in enumerate(region_keyframes):
+        if abs(kf['timestamp'] - timestamp) < 0.1:  # Within 0.1s
+            # Update existing keyframe
+            region_keyframes[i] = {
+                'timestamp': timestamp,
+                'cam': dict(cam),
+                'content': dict(content),
+            }
+            return
+    
+    # Add new keyframe
+    region_keyframes.append({
+        'timestamp': timestamp,
+        'cam': dict(cam),
+        'content': dict(content),
+    })
+    
+    # Sort by timestamp
+    region_keyframes.sort(key=lambda k: k['timestamp'])
+
+
+def remove_region_keyframe(index):
+    """Remove a region keyframe by index."""
+    
+    if 0 <= index < len(region_keyframes):
+        region_keyframes.pop(index)
+
+
+def clear_region_keyframes():
+    """Clear all region keyframes."""
+    
+    region_keyframes.clear()
+
 
 # ============================================================
 # VIDEO TRIMMING
@@ -344,23 +420,37 @@ async def apply_trim(ranges, script_path=None):
     global trimmed_video, trim_plan
 
     source = selected_video
+    
+    print(f"[APPLY_TRIM] Starting trim process...", flush=True)
+    print(f"[APPLY_TRIM] Source video: {source}", flush=True)
+    print(f"[APPLY_TRIM] Ranges to cut: {ranges}", flush=True)
 
     if not source or not os.path.exists(source):
+        print(f"[APPLY_TRIM] ERROR: Video not found", flush=True)
         return False, "Choose a video first."
 
     try:
+        print(f"[APPLY_TRIM] Probing video duration...", flush=True)
         duration = await run.io_bound(trim.probe_duration, source)
+        print(f"[APPLY_TRIM] Duration: {duration}s", flush=True)
 
     except Exception as e:
+        print(f"[APPLY_TRIM] ERROR probing duration: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         return False, f"Could not read the video duration: {e}"
 
     try:
+        print(f"[APPLY_TRIM] Creating trim plan...", flush=True)
         plan = trim.trim_plan(ranges, duration)
+        print(f"[APPLY_TRIM] Plan: {plan}", flush=True)
 
     except ValueError as e:
+        print(f"[APPLY_TRIM] ERROR creating plan: {e}", flush=True)
         return False, str(e)
 
     if not plan["cuts"]:
+        print(f"[APPLY_TRIM] ERROR: No cuts to apply", flush=True)
         return False, "No cuts to apply."
 
     out_dir = os.path.join(
@@ -370,17 +460,26 @@ async def apply_trim(ranges, script_path=None):
 
     base = os.path.splitext(os.path.basename(source))[0]
     out_path = os.path.join(out_dir, f"{base}_trimmed.mp4")
+    
+    print(f"[APPLY_TRIM] Output will be: {out_path}", flush=True)
 
     try:
+        print(f"[APPLY_TRIM] Starting trim_video...", flush=True)
         await run.io_bound(
             trim.trim_video, source, out_path, ranges, duration
         )
+        print(f"[APPLY_TRIM] trim_video completed successfully!", flush=True)
 
     except Exception as e:
+        print(f"[APPLY_TRIM] ERROR during trimming: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         return False, f"Trimming failed: {e}"
 
     trimmed_video = out_path
     trim_plan = plan
+    
+    print(f"[APPLY_TRIM] Trim successful! File saved to: {out_path}", flush=True)
 
     # Rewrite the script so its timestamps match the trimmed video.
     note = ""
@@ -883,6 +982,11 @@ async def render_clip(index):
 
     layout = layout_select.value
     use_gpu = bool(ffmpeg_toggle.value)
+    
+    # Get regions at the clip's start time (use keyframes if available)
+    clip_start = clip["start_time"]
+    clip_cam = get_region_at_time(clip_start, 'cam')
+    clip_content = get_region_at_time(clip_start, 'content')
 
     def work():
         if use_gpu:
@@ -892,8 +996,8 @@ async def render_clip(index):
                 clip["start_time"],
                 clip["end_time"],
                 layout=layout,
-                cam=cam_region,
-                content=content_region,
+                cam=clip_cam,
+                content=clip_content,
                 band_ratio=config["cam_band_ratio"],
                 cam_fit=config["cam_fit"],
                 content_fit=config["content_fit"],
@@ -905,8 +1009,8 @@ async def render_clip(index):
                 clip["start_time"],
                 clip["end_time"],
                 layout,
-                cam_region=cam_region,
-                content_region=content_region,
+                cam_region=clip_cam,
+                content_region=clip_content,
                 band_ratio=config["cam_band_ratio"],
                 cam_fit=config["cam_fit"],
                 content_fit=config["content_fit"],
@@ -987,7 +1091,7 @@ async def run_transcription():
 
         transcribe_progress.value = pct / 100.0
         transcribe_progress_text.text = (
-            f"{pct}%  ·  {progress_state['count']} lines  ·  "
+            f"{pct}%  Â·  {progress_state['count']} lines  Â·  "
             f"{transcribe.format_timestamp(progress_state['end'])}"
         )
 
@@ -1617,7 +1721,7 @@ with ui.column().classes("app"):
 
 
     # --------------------------------------------------------
-    # 01 — SOURCE
+    # 01 â€” SOURCE
     # --------------------------------------------------------
 
     with ui.column().classes("panel"):
@@ -1954,21 +2058,29 @@ with ui.column().classes("app"):
 
         async def run_trim():
             """Apply the pending cuts."""
+            
+            print(f"[RUN_TRIM] Button clicked!", flush=True)
+            print(f"[RUN_TRIM] Cuts: {cuts}", flush=True)
 
             if not cuts:
+                print(f"[RUN_TRIM] No cuts to apply", flush=True)
                 set_status("Add at least one cut first.", error=True)
                 return
 
             set_status("Trimming video...")
+            print(f"[RUN_TRIM] Calling apply_trim...", flush=True)
 
             ok, message = await apply_trim(
                 [{"start": a, "end": b} for a, b in cuts],
                 selected_script or None,
             )
+            
+            print(f"[RUN_TRIM] apply_trim returned: ok={ok}, message={message}", flush=True)
 
             set_status(message, error=not ok)
 
             if ok:
+                print(f"[RUN_TRIM] Success! Clearing cuts and refreshing UI", flush=True)
                 cuts.clear()
                 refresh_trim_status()
 
@@ -1977,11 +2089,13 @@ with ui.column().classes("app"):
                     update_preview()
                 except NameError:
                     pass
+            else:
+                print(f"[RUN_TRIM] Failed with message: {message}", flush=True)
 
     refresh_trim_status()
 
     # --------------------------------------------------------
-    # 02 — OUTPUT
+    # 02 â€” OUTPUT
     # --------------------------------------------------------
 
     with ui.column().classes("panel"):
@@ -2030,7 +2144,7 @@ with ui.column().classes("app"):
             ).classes("inline-help")
 
     # --------------------------------------------------------
-    # 03 — LAYOUT
+    # 03 â€” LAYOUT
     # --------------------------------------------------------
 
     with ui.column().classes("panel"):
@@ -2162,13 +2276,234 @@ with ui.column().classes("app"):
     refresh_region_summaries()
 
     # --------------------------------------------------------
-    # 04 — AI
+    # 04 â€” PREVIEW
     # --------------------------------------------------------
 
     with ui.column().classes("panel"):
 
         section(
             "04",
+            "Preview",
+            "What the rendered short will look like.",
+        )
+
+        with ui.expansion(
+            "Show preview", icon="preview"
+        ).classes("preview-panel"):
+
+            # --- Preview timestamp controls ---
+            with ui.row().classes("form-row"):
+                ui.label("Preview at").classes("form-label")
+                
+                preview_time_input = ui.input(
+                    value="00:00:05",
+                    placeholder="HH:MM:SS"
+                ).props("outlined dense").classes("small-input")
+                
+                ui.button(
+                    "-10s",
+                    on_click=lambda: adjust_preview_time(-10),
+                ).props("flat dense size=sm")
+                
+                ui.button(
+                    "-1s",
+                    on_click=lambda: adjust_preview_time(-1),
+                ).props("flat dense size=sm")
+                
+                ui.button(
+                    "+1s",
+                    on_click=lambda: adjust_preview_time(1),
+                ).props("flat dense size=sm")
+                
+                ui.button(
+                    "+10s",
+                    on_click=lambda: adjust_preview_time(10),
+                ).props("flat dense size=sm")
+                
+                ui.button(
+                    "Update Preview",
+                    icon="refresh",
+                    on_click=lambda: update_preview_at_timestamp(),
+                ).props("outline dense")
+
+            preview_row = ui.row().classes("preview-row")
+
+        preview_note = ui.label(
+            "Choose a video to see a real preview."
+        ).classes("inline-help")
+        
+        # --- Region Keyframes ---
+        with ui.expansion(
+            "Region Keyframes (Advanced)", icon="timeline"
+        ).classes("preview-panel"):
+            
+            ui.label(
+                "Define different webcam/content areas at different times in the video."
+            ).classes("inline-help")
+            
+            with ui.row().classes("form-row"):
+                ui.label("").classes("form-label")
+                
+                ui.button(
+                    "Add Keyframe at Current Preview Time",
+                    icon="add_circle",
+                    on_click=lambda: add_current_keyframe(),
+                ).props("outline")
+                
+                ui.button(
+                    "Clear All Keyframes",
+                    icon="delete_sweep",
+                    on_click=lambda: clear_all_keyframes(),
+                ).props("flat")
+            
+            keyframes_list = ui.column().classes("trim-list")
+            
+            def render_keyframes_list():
+                """Render the list of region keyframes."""
+                
+                keyframes_list.clear()
+                
+                with keyframes_list:
+                    if not region_keyframes:
+                        ui.label("No keyframes added. The default region will be used for the entire video.").classes("inline-help")
+                        return
+                    
+                    for i, kf in enumerate(region_keyframes):
+                        ts = kf['timestamp']
+                        cam = kf['cam']
+                        content = kf['content']
+                        
+                        with ui.card().classes("keyframe-card"):
+                            with ui.row().classes("keyframe-header"):
+                                ui.icon("schedule").classes("keyframe-icon")
+                                ui.label(format_timecode(ts)).classes("keyframe-time")
+                                
+                                ui.button(
+                                    icon="edit",
+                                    on_click=lambda idx=i: edit_keyframe(idx),
+                                ).props("flat dense round size=sm").tooltip("Edit this keyframe")
+                                
+                                ui.button(
+                                    icon="delete",
+                                    on_click=lambda idx=i: delete_keyframe(idx),
+                                ).props("flat dense round size=sm").tooltip("Delete this keyframe")
+                            
+                            with ui.column().classes("keyframe-details"):
+                                ui.label(f"Cam: {cam['w']}x{cam['h']} at ({cam['x']}, {cam['y']})").classes("inline-help")
+                                ui.label(f"Content: {content['w']}x{content['h']} at ({content['x']}, {content['y']})").classes("inline-help")
+
+    def adjust_preview_time(delta_seconds):
+        """Adjust the preview timestamp by delta seconds."""
+        
+        global preview_timestamp
+        
+        try:
+            current = parse_timecode(preview_time_input.value)
+        except:
+            current = preview_timestamp
+        
+        new_time = max(0, current + delta_seconds)
+        
+        # Limit to video duration if video is selected
+        if selected_video and os.path.exists(selected_video):
+            try:
+                duration = trim.probe_duration(selected_video)
+                new_time = min(new_time, duration)
+            except:
+                pass
+        
+        preview_timestamp = new_time
+        preview_time_input.value = format_timecode(new_time)
+    
+    
+    async def update_preview_at_timestamp():
+        """Update the preview to show the frame at the current timestamp."""
+        
+        global preview_timestamp
+        
+        try:
+            preview_timestamp = parse_timecode(preview_time_input.value)
+        except:
+            set_status("Invalid timestamp format. Use HH:MM:SS", error=True)
+            return
+        
+        update_preview()
+    
+    
+    async def add_current_keyframe():
+        """Add a keyframe at the current preview timestamp."""
+        
+        global preview_timestamp
+        
+        try:
+            preview_timestamp = parse_timecode(preview_time_input.value)
+        except:
+            set_status("Invalid timestamp format. Use HH:MM:SS", error=True)
+            return
+        
+        # Use current regions
+        add_region_keyframe(preview_timestamp, cam_region, content_region)
+        
+        render_keyframes_list()
+        
+        set_status(
+            f"Keyframe added at {format_timecode(preview_timestamp)}. "
+            f"Regions saved: Cam {cam_region['w']}x{cam_region['h']}, "
+            f"Content {content_region['w']}x{content_region['h']}"
+        )
+    
+    
+    def clear_all_keyframes():
+        """Clear all region keyframes."""
+        
+        clear_region_keyframes()
+        render_keyframes_list()
+        set_status("All keyframes cleared. Default region will be used.")
+    
+    
+    async def edit_keyframe(index):
+        """Edit an existing keyframe."""
+        
+        if 0 <= index < len(region_keyframes):
+            kf = region_keyframes[index]
+            
+            # Set preview to this keyframe's time
+            preview_timestamp = kf['timestamp']
+            preview_time_input.value = format_timecode(preview_timestamp)
+            
+            # Load this keyframe's regions
+            cam_region.clear()
+            cam_region.update(kf['cam'])
+            content_region.clear()
+            content_region.update(kf['content'])
+            
+            # Update displays
+            refresh_region_summaries()
+            update_preview()
+            
+            set_status(
+                f"Loaded keyframe at {format_timecode(kf['timestamp'])}. "
+                f"Adjust regions and click 'Add Keyframe' to update."
+            )
+    
+    
+    def delete_keyframe(index):
+        """Delete a keyframe."""
+        
+        if 0 <= index < len(region_keyframes):
+            ts = region_keyframes[index]['timestamp']
+            remove_region_keyframe(index)
+            render_keyframes_list()
+            set_status(f"Keyframe at {format_timecode(ts)} deleted.")
+
+    # --------------------------------------------------------
+    # 05 â€” AI
+    # --------------------------------------------------------
+
+    with ui.column().classes("panel"):
+
+        section(
+            "05",
             "AI",
             "Where the segments come from. Reuse a JSON to skip the AI.",
         )
@@ -2279,164 +2614,10 @@ with ui.column().classes("app"):
             ).classes("inline-help")
 
 
-    # --------------------------------------------------------
-    # 05 — PREVIEW
-    # --------------------------------------------------------
-
-    with ui.column().classes("panel"):
-
-        section(
-            "05",
-            "Preview",
-            "What the rendered short will look like.",
-        )
-
-        with ui.expansion(
-            "Show preview", icon="preview"
-        ).classes("preview-panel"):
-
-            preview_row = ui.row().classes("preview-row")
-
-        preview_note = ui.label(
-            "Choose a video to see a real preview."
-        ).classes("inline-help")
-
-    def update_preview():
-        """
-        Show what the output will look like.
-
-        For the Shorts-with-Cam layout this renders an actual preview from a
-        frame of the selected video, using the same fitting rules as the
-        renderers. The other layouts get a schematic.
-        """
-
-        preview_row.clear()
-
-        layout = layout_select.value
-        band = config["cam_band_ratio"]
-
-        # Output canvas, drawn small. 9:16.
-        out_w, out_h = 216, 384
-
-        # Keep the note in step with what the preview can show.
-        if layout == "Shorts with Cam (9:16)":
-            source = active_video()
-            if source and os.path.exists(source):
-                preview_note.text = (
-                    "Rendered from a real frame of the video, using the "
-                    "same fitting rules as the renderer."
-                )
-            else:
-                preview_note.text = (
-                    "Choose a video to see a real preview."
-                )
-        else:
-            preview_note.text = (
-                "Schematic. The Shorts-with-Cam layout shows a real frame."
-            )
-
-        with preview_row:
-
-            if layout == "Shorts with Cam (9:16)":
-
-                # Use the active video: after a trim, the preview must
-                # reflect the trimmed file, not the original.
-                source = active_video()
-
-                if source and os.path.exists(source):
-                    try:
-                        frame = extract_frame(source, 5)
-
-                        image = render_preview_image(
-                            frame,
-                            cam_region,
-                            content_region,
-                            band,
-                            config.get("cam_fit"),
-                            config.get("content_fit"),
-                        )
-
-                        ui.image(image).classes("preview-image")
-
-                    except Exception as e:
-                        print(f"[WARNING] Preview failed: {e}")
-                        ui.label(
-                            "Could not build the preview."
-                        ).classes("inline-help")
-
-                else:
-                    ui.label(
-                        "Choose a video to see a real preview."
-                    ).classes("inline-help")
-
-            else:
-
-                with ui.element("div").classes(
-                    "preview-canvas"
-                ).style(f"width:{out_w}px;height:{out_h}px"):
-
-                    if layout == (
-                        "Do Not Crop (Keep Original Aspect Ratio)"
-                    ):
-                        ui.label(
-                            "Original framing, no vertical canvas."
-                        ).classes("inline-help")
-
-                    else:
-                        ui.element("div").classes(
-                            "preview-content"
-                        ).style(
-                            f"left:0;top:0;"
-                            f"width:{out_w}px;height:{out_h}px"
-                        )
-
-                        ui.label(
-                            layout.split("(")[0].strip()
-                        ).classes("preview-tag").style(
-                            "left:6px;top:6px"
-                        )
-
-            with ui.column().classes("preview-info"):
-
-                ui.label(
-                    f"Output: {OUTPUT_WIDTH} x {OUTPUT_HEIGHT}"
-                ).classes("inline-help")
-
-                top_h = int(OUTPUT_HEIGHT * band)
-                top_h -= top_h % 2
-
-                ui.label(
-                    f"Cam band: {int(band * 100)}% ({top_h} px)"
-                ).classes("inline-help")
-
-                ui.label(
-                    f"Content band: "
-                    f"{100 - int(band * 100)}% "
-                    f"({OUTPUT_HEIGHT - top_h} px)"
-                ).classes("inline-help")
-
-                ui.label(
-                    f"Cam source: {cam_region['w']}x{cam_region['h']} "
-                    f"at ({cam_region['x']}, {cam_region['y']})"
-                ).classes("inline-help")
-
-                ui.label(
-                    f"Content source: "
-                    f"{content_region['w']}x{content_region['h']} "
-                    f"at ({content_region['x']}, {content_region['y']})"
-                ).classes("inline-help")
-
-    layout_select.on_value_change(
-        lambda: (config.update(layout=layout_select.value),
-                 save_config(),
-                 update_preview())
-    )
-
-    update_preview()
 
 
     # --------------------------------------------------------
-    # 06 — CLIPS
+    # 06 â€” CLIPS
     # --------------------------------------------------------
 
     with ui.column().classes("panel"):
@@ -2531,13 +2712,13 @@ with ui.column().classes("app"):
                 if b.get("error"):
                     cls, mark = "block-chip block-error", "!"
                 elif b.get("running"):
-                    cls, mark = "block-chip block-running", "…"
+                    cls, mark = "block-chip block-running", "â€¦"
                 elif b.get("done"):
                     cls, mark = "block-chip block-done", str(
                         b.get("found", 0)
                     )
                 else:
-                    cls, mark = "block-chip block-pending", "–"
+                    cls, mark = "block-chip block-pending", "â€“"
 
                 label = (
                     f"{blocks.seconds_to_timestamp(b['start'])} "
@@ -2564,7 +2745,7 @@ with ui.column().classes("app"):
                 with ui.row().classes("clip-item"):
 
                     ui.label(
-                        f"{c['start_time']} → {c['end_time']}"
+                        f"{c['start_time']} â†’ {c['end_time']}"
                     ).classes("clip-time")
 
                     ui.label(
@@ -2580,7 +2761,7 @@ with ui.column().classes("app"):
 
                     elif c.get("rendered"):
                         ui.label(
-                            f"✓ {c['rendered']}"
+                            f"âœ“ {c['rendered']}"
                         ).classes("clip-done")
 
                     elif c.get("rendering"):
