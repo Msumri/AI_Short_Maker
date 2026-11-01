@@ -178,15 +178,42 @@ def detect_gpu():
 
 
 def timestamp_to_seconds(timestamp):
+    """
+    Convert a timestamp to seconds.
 
-    parts = timestamp.split(":")
+    Accepts HH:MM:SS, MM:SS and SS. Models frequently answer with the
+    shorter MM:SS form, especially when the source script is written that
+    way (e.g. "[01:12] ..."), so all three are accepted.
+    """
 
-    if len(parts) != 3:
+    if isinstance(timestamp, (int, float)):
+        return int(timestamp)
+
+    parts = str(timestamp).strip().split(":")
+
+    if len(parts) > 3:
         raise ValueError(
             f"Invalid timestamp: {timestamp}"
         )
 
-    hours, minutes, seconds = map(int, parts)
+    try:
+        values = [int(part.strip()) for part in parts]
+
+    except ValueError:
+        raise ValueError(
+            f"Invalid timestamp: {timestamp}"
+        )
+
+    if any(value < 0 for value in values):
+        raise ValueError(
+            f"Invalid timestamp: {timestamp}"
+        )
+
+    # Left-pad so "SS" -> [0, 0, s] and "MM:SS" -> [0, m, s].
+    while len(values) < 3:
+        values.insert(0, 0)
+
+    hours, minutes, seconds = values
 
     if minutes >= 60 or seconds >= 60:
         raise ValueError(
@@ -454,15 +481,42 @@ def cut_video_segment(
 # --------------------------------------------------
 
 def timestamp_to_seconds(timestamp):
+    """
+    Convert a timestamp to seconds.
 
-    parts = timestamp.split(":")
+    Accepts HH:MM:SS, MM:SS and SS. Models frequently answer with the
+    shorter MM:SS form, especially when the source script is written that
+    way (e.g. "[01:12] ..."), so all three are accepted.
+    """
 
-    if len(parts) != 3:
+    if isinstance(timestamp, (int, float)):
+        return int(timestamp)
+
+    parts = str(timestamp).strip().split(":")
+
+    if len(parts) > 3:
         raise ValueError(
             f"Invalid timestamp: {timestamp}"
         )
 
-    hours, minutes, seconds = map(int, parts)
+    try:
+        values = [int(part.strip()) for part in parts]
+
+    except ValueError:
+        raise ValueError(
+            f"Invalid timestamp: {timestamp}"
+        )
+
+    if any(value < 0 for value in values):
+        raise ValueError(
+            f"Invalid timestamp: {timestamp}"
+        )
+
+    # Left-pad so "SS" -> [0, 0, s] and "MM:SS" -> [0, m, s].
+    while len(values) < 3:
+        values.insert(0, 0)
+
+    hours, minutes, seconds = values
 
     if minutes >= 60 or seconds >= 60:
         raise ValueError(
