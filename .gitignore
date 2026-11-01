@@ -1,1 +1,20 @@
 /__pycache__
+
+# Local settings — holds the OpenRouter API key. Never commit this.
+settings.json
+
+# NiceGUI browser storage (saved regions, layout config).
+/.nicegui/
+
+# Generated output and working files.
+/output/
+/trimmed/
+/scripts/
+/videos/
+/transcripts/
+
+# Any stray media or script files kept next to the code.
+*.mp4
+*.mkv
+*.mov
+*.webm

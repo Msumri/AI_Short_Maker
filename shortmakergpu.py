@@ -98,7 +98,7 @@ def detect_gpu():
             if "nvidia" in gpu_info:
 
                 print(
-                    "[GPU] NVIDIA detected → CUDA/NVENC",
+                    "[GPU] NVIDIA detected -> CUDA/NVENC",
                     flush=True
                 )
 
@@ -108,7 +108,7 @@ def detect_gpu():
             if "amd" in gpu_info or "radeon" in gpu_info:
 
                 print(
-                    "[GPU] AMD detected → AMF",
+                    "[GPU] AMD detected -> AMF",
                     flush=True
                 )
 
@@ -143,7 +143,7 @@ def detect_gpu():
             if "nvidia" in gpu_info:
 
                 print(
-                    "[GPU] NVIDIA detected → CUDA/NVENC",
+                    "[GPU] NVIDIA detected -> CUDA/NVENC",
                     flush=True
                 )
 
@@ -170,7 +170,7 @@ def detect_gpu():
     # ---------------------------------------------------------
 
     print(
-        "[GPU] No supported GPU detected → CPU",
+        "[GPU] No supported GPU detected -> CPU",
         flush=True
     )
 
@@ -200,11 +200,217 @@ def timestamp_to_seconds(timestamp):
     )
 
 
+# ---------------------------------------------------------
+# Layouts
+# ---------------------------------------------------------
+
+OUTPUT_WIDTH = 1080
+OUTPUT_HEIGHT = 1920
+
+LAYOUT_ORIGINAL = "original"
+LAYOUT_CROP = "crop"
+LAYOUT_BLUR = "blur"
+LAYOUT_CAM = "cam"
+
+# Fraction of the output height used by the webcam band.
+CAM_BAND_RATIO = 0.30
+
+# Fallback webcam region, in source pixels, used when the caller does not
+# supply one. Bottom-left corner, which is where most gameplay overlays sit.
+DEFAULT_CAM = {"x": 20, "y": 520, "w": 320, "h": 180}
+
+# Fallback content region: the whole frame.
+DEFAULT_CONTENT = {"x": 0, "y": 0, "w": 1280, "h": 720}
+
+# Colour handling. The source is bt709 limited-range; without these the
+# filter graph emits yuvj420p full-range and the output looks washed out
+# and blue-tinted.
+COLOR_PARAMS = [
+    "-pix_fmt", "yuv420p",
+    "-color_range", "tv",
+    "-colorspace", "bt709",
+    "-color_primaries", "bt709",
+    "-color_trc", "bt709",
+]
+
+# Maps the labels shown in the UI to the internal layout names.
+LAYOUT_MAP = {
+    "Do Not Crop (Keep Original Aspect Ratio)": LAYOUT_ORIGINAL,
+    "Center Crop (9:16 Full Screen)": LAYOUT_CROP,
+    "Fit with Blurred Background": LAYOUT_BLUR,
+    "Shorts with Cam (9:16)": LAYOUT_CAM,
+}
+
+
+def normalize_layout(layout):
+    """Accept a UI label or an internal name; return an internal name."""
+
+    if not layout:
+        return LAYOUT_ORIGINAL
+
+    if layout in LAYOUT_MAP:
+        return LAYOUT_MAP[layout]
+
+    if layout in (
+        LAYOUT_ORIGINAL,
+        LAYOUT_CROP,
+        LAYOUT_BLUR,
+        LAYOUT_CAM,
+    ):
+        return layout
+
+    raise ValueError(f"Unknown layout: {layout}")
+
+
+# How a region is fitted into its band.
+#   fill -> scale to cover the band, cropping the overflow (no black bars)
+#   fit  -> scale to fit inside the band, adding black bars (nothing cropped)
+FIT_FILL = "fill"
+FIT_CONTAIN = "fit"
+
+FIT_MAP = {
+    "Fill (may crop)": FIT_FILL,
+    "Fit (may add bars)": FIT_CONTAIN,
+}
+
+
+def normalize_fit(fit):
+    """Accept a UI label or an internal name; return an internal name."""
+
+    if not fit:
+        return FIT_FILL
+
+    if fit in FIT_MAP:
+        return FIT_MAP[fit]
+
+    if fit in (FIT_FILL, FIT_CONTAIN):
+        return fit
+
+    return FIT_FILL
+
+
+def _fit_chain(dst_w, dst_h, fit):
+    """FFmpeg chain that scales a stream into a dst_w x dst_h box."""
+
+    if normalize_fit(fit) == FIT_CONTAIN:
+        return (
+            f"scale={dst_w}:{dst_h}"
+            f":force_original_aspect_ratio=decrease,"
+            f"pad={dst_w}:{dst_h}:(ow-iw)/2:(oh-ih)/2:color=black"
+        )
+
+    return (
+        f"scale={dst_w}:{dst_h}"
+        f":force_original_aspect_ratio=increase,"
+        f"crop={dst_w}:{dst_h}"
+    )
+
+
+def _merge_box(default, override):
+    """Overlay a user-supplied region on top of the default one."""
+
+    box = dict(default)
+
+    if override:
+        box.update(
+            {
+                key: value
+                for key, value in override.items()
+                if value is not None
+            }
+        )
+
+    return box
+
+
+def build_video_filter(
+    layout,
+    cam=None,
+    content=None,
+    band_ratio=None,
+    cam_fit=None,
+    content_fit=None,
+):
+    """
+    Build the FFmpeg filter graph for a layout.
+
+    Returns (filter_complex, output_label). For the passthrough layout both
+    are None, meaning the input stream is mapped straight through, which is
+    the fastest path and keeps the original resolution.
+    """
+
+    layout = normalize_layout(layout)
+
+    if band_ratio is None:
+        band_ratio = CAM_BAND_RATIO
+
+    # Keep the band within sane limits and even, so the encoder accepts it.
+    band_ratio = max(0.10, min(0.70, float(band_ratio)))
+
+    if layout == LAYOUT_ORIGINAL:
+        return None, None
+
+    if layout == LAYOUT_CROP:
+        return (
+            f"[0:v]scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}"
+            f":force_original_aspect_ratio=increase,"
+            f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},"
+            f"setsar=1[out]",
+            "[out]",
+        )
+
+    if layout == LAYOUT_BLUR:
+        return (
+            f"[0:v]scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}"
+            f":force_original_aspect_ratio=increase,"
+            f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},"
+            f"gblur=sigma=25,eq=brightness=-0.15,setsar=1[bg];"
+            f"[0:v]scale={OUTPUT_WIDTH}:-2,setsar=1[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2[out]",
+            "[out]",
+        )
+
+    if layout == LAYOUT_CAM:
+
+        cam_box = _merge_box(DEFAULT_CAM, cam)
+        content_box = _merge_box(DEFAULT_CONTENT, content)
+
+        top_h = int(OUTPUT_HEIGHT * band_ratio)
+        top_h -= top_h % 2
+        bottom_h = OUTPUT_HEIGHT - top_h
+
+        return (
+            # Webcam: cut the region out, then fit it into the top band.
+            f"[0:v]crop={cam_box['w']}:{cam_box['h']}"
+            f":{cam_box['x']}:{cam_box['y']},"
+            f"{_fit_chain(OUTPUT_WIDTH, top_h, cam_fit)},setsar=1[cam];"
+            # Content: cut its region out, then fit it into the bottom band.
+            f"[0:v]crop={content_box['w']}:{content_box['h']}"
+            f":{content_box['x']}:{content_box['y']},"
+            f"{_fit_chain(OUTPUT_WIDTH, bottom_h, content_fit)},setsar=1[content];"
+            # Compose onto a vertical canvas.
+            f"color=c=black:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}"
+            f":r=30,format=yuv420p[bg];"
+            f"[bg][cam]overlay=0:0:format=auto[t1];"
+            f"[t1][content]overlay=0:{top_h}:format=auto,"
+            f"format=yuv420p[out]",
+            "[out]",
+        )
+
+    raise ValueError(f"Unknown layout: {layout}")
+
+
 def cut_video_segment(
     input_file,
     output_file,
     start_time,
     end_time,
+    layout=None,
+    cam=None,
+    content=None,
+    band_ratio=None,
+    cam_fit=None,
+    content_fit=None,
 ):
     ffmpeg = get_ffmpeg_path()
     gpu_type = detect_gpu()
@@ -265,16 +471,42 @@ def cut_video_segment(
     ]
 
     # ---------------------------------------------------------
-    # NO VIDEO FILTER
+    # Video filter (layout)
     # ---------------------------------------------------------
 
-    command += [
-        "-map",
-        "0:v:0",
+    filter_complex, output_label = build_video_filter(
+        layout, cam, content, band_ratio, cam_fit, content_fit
+    )
 
-        "-map",
-        "0:a?",
-    ]
+    if filter_complex:
+
+        print(
+            f"[GPU] Layout: {normalize_layout(layout)}",
+            flush=True
+        )
+
+        command += [
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            output_label,
+            "-map",
+            "0:a?",
+        ]
+
+    else:
+
+        # -----------------------------------------------------
+        # NO VIDEO FILTER (original resolution passthrough)
+        # -----------------------------------------------------
+
+        command += [
+            "-map",
+            "0:v:0",
+
+            "-map",
+            "0:a?",
+        ]
 
     # ---------------------------------------------------------
     # Video encoder
@@ -321,6 +553,15 @@ def cut_video_segment(
             "-crf",
             "18",
         ]
+
+    # ---------------------------------------------------------
+    # Colour metadata
+    # ---------------------------------------------------------
+
+    # Only needed when a filter graph ran; the passthrough path already
+    # carries the source's own colour metadata.
+    if filter_complex:
+        command += COLOR_PARAMS
 
     # ---------------------------------------------------------
     # Audio + progress
@@ -454,15 +695,42 @@ def cut_video_segment(
 # --------------------------------------------------
 
 def timestamp_to_seconds(timestamp):
+    """
+    Convert a timestamp to seconds.
 
-    parts = timestamp.split(":")
+    Accepts HH:MM:SS, MM:SS and SS. AI models frequently answer with the
+    shorter MM:SS form, especially when the source script is written that
+    way (e.g. "[01:12] ..."), so all three forms are accepted.
+    """
 
-    if len(parts) != 3:
+    if isinstance(timestamp, (int, float)):
+        return int(timestamp)
+
+    parts = str(timestamp).strip().split(":")
+
+    if len(parts) > 3:
         raise ValueError(
             f"Invalid timestamp: {timestamp}"
         )
 
-    hours, minutes, seconds = map(int, parts)
+    try:
+        values = [int(part.strip()) for part in parts]
+
+    except ValueError:
+        raise ValueError(
+            f"Invalid timestamp: {timestamp}"
+        )
+
+    if any(value < 0 for value in values):
+        raise ValueError(
+            f"Invalid timestamp: {timestamp}"
+        )
+
+    # Left-pad so that "SS" -> [0, 0, s] and "MM:SS" -> [0, m, s]
+    while len(values) < 3:
+        values.insert(0, 0)
+
+    hours, minutes, seconds = values
 
     if minutes >= 60 or seconds >= 60:
         raise ValueError(
@@ -478,6 +746,16 @@ def timestamp_to_seconds(timestamp):
 
 # --------------------------------------------------
 # Validate segments
+def seconds_to_timestamp(seconds):
+    """Format seconds as HH:MM:SS."""
+
+    total = max(0, int(round(seconds)))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
 # --------------------------------------------------
 
 def validate_segments(
@@ -504,9 +782,18 @@ def validate_segments(
             "'segments' must be an array."
         )
 
-    if len(segments) != expected_segments:
+    # Models rarely hit an exact count. Rejecting a good batch over one
+    # extra segment wastes a whole request, so allow a margin and use
+    # whatever came back.
+    if not segments:
+        raise ValueError("The response contained no segments.")
+
+    lower = max(1, int(expected_segments * 0.8))
+    upper = max(lower, int(expected_segments * 1.2) + 1)
+
+    if not (lower <= len(segments) <= upper):
         raise ValueError(
-            f"Expected {expected_segments} segments, "
+            f"Expected around {expected_segments} segments, "
             f"got {len(segments)}."
         )
 
@@ -549,11 +836,16 @@ def validate_segments(
                 f"Minimum is {min_duration}s."
             )
 
+        # A model that ignores the upper bound is common when the script
+        # has sparse markers. Trim the segment instead of failing the run.
         if duration > max_duration:
-            raise ValueError(
-                f"Segment {i} is too long: "
-                f"{duration}s. "
-                f"Maximum is {max_duration}s."
+            print(
+                f"[AI] Segment {i} is {duration}s, over the "
+                f"{max_duration}s limit; trimming it.",
+                flush=True,
+            )
+            segment["end_time"] = seconds_to_timestamp(
+                start + max_duration
             )
 
         if not segment["title"].strip():
@@ -852,7 +1144,16 @@ SCRIPT:
 # Cut videos
 # --------------------------------------------------
 
-def cut_videos(video_segments,video_path ):
+def cut_videos(
+    video_segments,
+    video_path,
+    layout=None,
+    cam=None,
+    content=None,
+    band_ratio=None,
+    cam_fit=None,
+    content_fit=None,
+):
     os.makedirs(
             "output",
             exist_ok=True
@@ -878,7 +1179,7 @@ def cut_videos(video_segments,video_path ):
         )
 
         print(
-            f"{seg['start_time']} → "
+            f"{seg['start_time']} -> "
             f"{seg['end_time']}",
             flush=True
         )
@@ -888,6 +1189,12 @@ def cut_videos(video_segments,video_path ):
             output_name,
             seg["start_time"],
             seg["end_time"],
+            layout=layout,
+            cam=cam,
+            content=content,
+            band_ratio=band_ratio,
+            cam_fit=cam_fit,
+            content_fit=content_fit,
         )
 
 
