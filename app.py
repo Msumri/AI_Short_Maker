@@ -2496,6 +2496,141 @@ with ui.column().classes("app"):
             render_keyframes_list()
             set_status(f"Keyframe at {format_timecode(ts)} deleted.")
 
+
+    def update_preview():
+        """
+        Show what the output will look like.
+
+        For the Shorts-with-Cam layout this renders an actual preview from a
+        frame of the selected video, using the same fitting rules as the
+        renderers. The other layouts get a schematic.
+        """
+
+        preview_row.clear()
+
+        layout = layout_select.value
+        band = config["cam_band_ratio"]
+
+        # Output canvas, drawn small. 9:16.
+        out_w, out_h = 216, 384
+
+        # Keep the note in step with what the preview can show.
+        if layout == "Shorts with Cam (9:16)":
+            source = active_video()
+            if source and os.path.exists(source):
+                preview_note.text = (
+                    "Rendered from a real frame of the video, using the "
+                    "same fitting rules as the renderer."
+                )
+            else:
+                preview_note.text = (
+                    "Choose a video to see a real preview."
+                )
+        else:
+            preview_note.text = (
+                "Schematic. The Shorts-with-Cam layout shows a real frame."
+            )
+
+        with preview_row:
+
+            if layout == "Shorts with Cam (9:16)":
+
+                # Use the active video: after a trim, the preview must
+                # reflect the trimmed file, not the original.
+                source = active_video()
+
+                if source and os.path.exists(source):
+                    try:
+                        # Use preview_timestamp instead of fixed 5 seconds
+                        frame = extract_frame(source, preview_timestamp)
+
+                        image = render_preview_image(
+                            frame,
+                            cam_region,
+                            content_region,
+                            band,
+                            config.get("cam_fit"),
+                            config.get("content_fit"),
+                        )
+
+                        ui.image(image).classes("preview-image")
+
+                    except Exception as e:
+                        print(f"[WARNING] Preview failed: {e}")
+                        ui.label(
+                            "Could not build the preview."
+                        ).classes("inline-help")
+
+                else:
+                    ui.label(
+                        "Choose a video to see a real preview."
+                    ).classes("inline-help")
+
+            else:
+
+                with ui.element("div").classes(
+                    "preview-canvas"
+                ).style(f"width:{out_w}px;height:{out_h}px"):
+
+                    if layout == (
+                        "Do Not Crop (Keep Original Aspect Ratio)"
+                    ):
+                        ui.label(
+                            "Original framing, no vertical canvas."
+                        ).classes("inline-help")
+
+                    else:
+                        ui.element("div").classes(
+                            "preview-content"
+                        ).style(
+                            f"left:0;top:0;"
+                            f"width:{out_w}px;height:{out_h}px"
+                        )
+
+                        ui.label(
+                            layout.split("(")[0].strip()
+                        ).classes("preview-tag").style(
+                            "left:6px;top:6px"
+                        )
+
+            with ui.column().classes("preview-info"):
+
+                ui.label(
+                    f"Output: {OUTPUT_WIDTH} x {OUTPUT_HEIGHT}"
+                ).classes("inline-help")
+
+                top_h = int(OUTPUT_HEIGHT * band)
+                top_h -= top_h % 2
+
+                ui.label(
+                    f"Cam band: {int(band * 100)}% ({top_h} px)"
+                ).classes("inline-help")
+
+                ui.label(
+                    f"Content band: "
+                    f"{100 - int(band * 100)}% "
+                    f"({OUTPUT_HEIGHT - top_h} px)"
+                ).classes("inline-help")
+
+                ui.label(
+                    f"Cam source: {cam_region['w']}x{cam_region['h']} "
+                    f"at ({cam_region['x']}, {cam_region['y']})"
+                ).classes("inline-help")
+
+                ui.label(
+                    f"Content source: "
+                    f"{content_region['w']}x{content_region['h']} "
+                    f"at ({content_region['x']}, {content_region['y']})"
+                ).classes("inline-help")
+
+    layout_select.on_value_change(
+        lambda: (config.update(layout=layout_select.value),
+                 save_config(),
+                 update_preview())
+    )
+
+    update_preview()
+
     # --------------------------------------------------------
     # 05 â€” AI
     # --------------------------------------------------------
