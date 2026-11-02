@@ -1,4 +1,4 @@
-﻿import os
+import os
 import io
 import json
 import asyncio
@@ -1120,7 +1120,7 @@ async def run_transcription():
         progress_state["end"] = end_seconds
 
     try:
-        path, count = await run.io_bound(
+        path, count, stats = await run.io_bound(
             transcribe.transcribe_to_script,
             source,
             model_size,
@@ -1149,7 +1149,9 @@ async def run_transcription():
 
     set_status(
         f"Transcript ready: {count} lines written to "
-        f"{os.path.basename(path)}. It is now the selected script."
+        f"{os.path.basename(path)}. "
+        f"Duration: {stats.get('duration_str', 'N/A')}. "
+        f"It is now the selected script."
     )
 
 
