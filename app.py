@@ -1328,6 +1328,53 @@ def render_preview_image(frame, cam_box, content_box, band_ratio,
     return canvas.resize((270, 480), Image.LANCZOS)
 
 
+def render_simple_crop_preview(frame, layout):
+    """
+    Render preview for simple crop layouts (Center, Top, Bottom).
+    
+    Extracts the appropriate 9:16 section from the source frame.
+    """
+    
+    from PIL import Image
+    
+    out_w, out_h = OUTPUT_WIDTH, OUTPUT_HEIGHT
+    src_w, src_h = frame.size
+    
+    # Target aspect ratio is 9:16
+    target_ratio = out_w / out_h
+    src_ratio = src_w / src_h
+    
+    if src_ratio > target_ratio:
+        # Source is wider - crop horizontally (center)
+        new_h = src_h
+        new_w = int(src_h * target_ratio)
+        x = (src_w - new_w) // 2
+        y = 0
+    else:
+        # Source is taller - crop vertically based on layout
+        new_w = src_w
+        new_h = int(src_w / target_ratio)
+        x = 0
+        
+        if "Center Crop" in layout:
+            y = (src_h - new_h) // 2
+        elif "Top Crop" in layout:
+            y = 0
+        elif "Bottom Crop" in layout:
+            y = src_h - new_h
+        else:
+            y = (src_h - new_h) // 2  # Default to center
+    
+    # Crop the frame
+    cropped = frame.crop((x, y, x + new_w, y + new_h))
+    
+    # Resize to output dimensions
+    resized = cropped.resize((out_w, out_h), Image.LANCZOS)
+    
+    # Downscale for display
+    return resized.resize((270, 480), Image.LANCZOS)
+
+
 # ============================================================
 # REGION PICKER (webcam / content)
 # ============================================================
@@ -2517,20 +2564,14 @@ with ui.column().classes("app"):
         out_w, out_h = 216, 384
 
         # Keep the note in step with what the preview can show.
-        if layout == "Shorts with Cam (9:16)":
-            source = active_video()
-            if source and os.path.exists(source):
-                preview_note.text = (
-                    "Rendered from a real frame of the video, using the "
-                    "same fitting rules as the renderer."
-                )
-            else:
-                preview_note.text = (
-                    "Choose a video to see a real preview."
-                )
+        source = active_video()
+        if source and os.path.exists(source):
+            preview_note.text = (
+                "Rendered from a real frame of the video at the selected timestamp."
+            )
         else:
             preview_note.text = (
-                "Schematic. The Shorts-with-Cam layout shows a real frame."
+                "Choose a video to see a real preview."
             )
 
         with preview_row:
@@ -2570,30 +2611,49 @@ with ui.column().classes("app"):
 
             else:
 
-                with ui.element("div").classes(
-                    "preview-canvas"
-                ).style(f"width:{out_w}px;height:{out_h}px"):
+                # Other layouts: Center Crop, Top Crop, Bottom Crop
+                source = active_video()
 
-                    if layout == (
-                        "Do Not Crop (Keep Original Aspect Ratio)"
-                    ):
-                        ui.label(
-                            "Original framing, no vertical canvas."
-                        ).classes("inline-help")
+                if source and os.path.exists(source):
+                    try:
+                        # Extract frame at preview timestamp
+                        frame = extract_frame(source, preview_timestamp)
 
-                    else:
-                        ui.element("div").classes(
-                            "preview-content"
-                        ).style(
-                            f"left:0;top:0;"
-                            f"width:{out_w}px;height:{out_h}px"
-                        )
+                        # Render the crop preview
+                        if layout == "Do Not Crop (Keep Original Aspect Ratio)":
+                            # Just show the original frame, scaled down
+                            from PIL import Image
+                            display = frame.resize((270, 480), Image.LANCZOS)
+                            ui.image(display).classes("preview-image")
+                            
+                        else:
+                            # Render the cropped preview (Center, Top, Bottom)
+                            image = render_simple_crop_preview(frame, layout)
+                            ui.image(image).classes("preview-image")
 
-                        ui.label(
-                            layout.split("(")[0].strip()
-                        ).classes("preview-tag").style(
-                            "left:6px;top:6px"
-                        )
+                    except Exception as e:
+                        print(f"[WARNING] Preview failed: {e}")
+                        # Fallback to schematic
+                        with ui.element("div").classes(
+                            "preview-canvas"
+                        ).style(f"width:{out_w}px;height:{out_h}px"):
+
+                            ui.element("div").classes(
+                                "preview-content"
+                            ).style(
+                                f"left:0;top:0;"
+                                f"width:{out_w}px;height:{out_h}px"
+                            )
+
+                            ui.label(
+                                layout.split("(")[0].strip()
+                            ).classes("preview-tag").style(
+                                "left:6px;top:6px"
+                            )
+                else:
+                    ui.label(
+                        "Choose a video to see a real preview."
+                    ).classes("inline-help")
 
             with ui.column().classes("preview-info"):
 
