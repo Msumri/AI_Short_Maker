@@ -2928,6 +2928,22 @@ with ui.column().classes("app"):
                 width_input.value = d["w"]
                 height_input.value = d["h"]
             
+            def set_x(value):
+                if not drafts:
+                    return
+                d = drafts[selected_idx["value"]]
+                d["x"] = max(0, min(int(value), img_w - d["w"]))
+                redraw()
+                x_input.value = d["x"]
+            
+            def set_y(value):
+                if not drafts:
+                    return
+                d = drafts[selected_idx["value"]]
+                d["y"] = max(0, min(int(value), img_h - d["h"]))
+                redraw()
+                y_input.value = d["y"]
+            
             def distribute_all():
                 """Auto-distribute all divisions based on orientation."""
                 n = len(drafts)
@@ -3147,6 +3163,24 @@ with ui.column().classes("app"):
                     
                     ui.separator().props("vertical")
                     
+                    # Position inputs (X/Y)
+                    with ui.row().classes("items-center gap-2"):
+                        ui.label("X:").classes("toolbar-label")
+                        x_input = ui.number(
+                            value=drafts[selected_idx["value"]]["x"] if drafts else 0,
+                            min=0, max=img_w, step=1,
+                            on_change=lambda v: set_x(v.value)
+                        ).props("outlined dense").classes("w-24")
+                        
+                        ui.label("Y:").classes("toolbar-label")
+                        y_input = ui.number(
+                            value=drafts[selected_idx["value"]]["y"] if drafts else 0,
+                            min=0, max=img_h, step=1,
+                            on_change=lambda v: set_y(v.value)
+                        ).props("outlined dense").classes("w-24")
+                    
+                    ui.separator().props("vertical")
+                    
                     # Actions
                     ui.button("Distribuir Igualmente", icon="grid_on",
                               on_click=distribute_all).props("outline dense size=sm")
@@ -3170,13 +3204,20 @@ with ui.column().classes("app"):
                     selected_idx["value"] = max(0, len(drafts) - 1)
                 div_select.value = f"Divisão {selected_idx['value'] + 1}" if drafts else None
                 div_select.update()
-                # Update width/height inputs
+                # Update width/height/position inputs
                 if drafts and 0 <= selected_idx["value"] < len(drafts):
                     d = drafts[selected_idx["value"]]
                     width_input.value = d["w"]
                     height_input.value = d["h"]
+                    x_input.value = d["x"]
+                    y_input.value = d["y"]
                     width_input.update()
                     height_input.update()
+                    x_input.update()
+                    y_input.update()
+                # Clear aspect lock when switching divisions (each division can have its own)
+                aspect_lock["enabled"] = False
+                aspect_lock["ratio"] = None
             
             # We need to update the select when divisions change - store reference
             dialog.on("close", lambda: None)  # placeholder
