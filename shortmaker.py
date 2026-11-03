@@ -71,6 +71,8 @@ def cut_video_segment(
     band_ratio=None,
     cam_fit=None,
     content_fit=None,
+    divisions=None,
+    orientation="horizontal",
 ):
     target_width = 1080
     target_height = 1920
@@ -252,6 +254,12 @@ def cut_video_segment(
                 cam_clip.with_position((0, 0)),
                 content_clip.with_position((0, top_h)),
             ])
+        elif layout_style == "Multi-Divisão 9:16":
+            # Multi-division layout for vertical 9:16 videos
+            final_clip = render_multi_division(
+                cut_clip, target_width, target_height,
+                divisions=divisions, orientation=orientation
+            )
         else:
             # "Do Not Crop (Keep Original Aspect Ratio)" and any unknown value:
             # keep the original framing, only scale down if wider than target.
@@ -302,6 +310,158 @@ def cut_video_segment(
             #bitrate=original_bitrate,
             ffmpeg_params=ffmpeg_extra_params,
         )
+
+
+# --------------------------------------------------
+# Multi-Division Layout Rendering (CPU)
+# --------------------------------------------------
+
+def render_multi_division(
+    clip, target_width, target_height, divisions=None, orientation="horizontal"
+):
+    """
+    Render a multi-division layout for 9:16 vertical videos.
+    
+    Args:
+        clip: Source VideoFileClip
+        target_width: Output width (1080)
+        target_height: Output height (1920)
+        divisions: List of division configs with:
+            - region: dict with x, y, w, h in source coordinates
+            - fit: 'fill' or 'fit'
+            - zoom: float (1.0 = no zoom)
+            - pos_x: float (0.0 to 1.0)
+            - pos_y: float (0.0 to 1.0)
+        orientation: 'horizontal' (stacked vertically), 'vertical' (side by side), 'grid'
+    
+    Returns:
+        CompositeVideoClip with all divisions composed
+    """
+    from moviepy import ColorClip, CompositeVideoClip
+    from moviepy.video.fx import Crop
+    
+    if not divisions:
+        # Fallback - return original clip centered
+        bg = ColorClip(size=(target_width, target_height), color=(0, 0, 0), duration=clip.duration)
+        return CompositeVideoClip([bg, clip.with_position("center")])
+    
+    num_divisions = len(divisions)
+    if num_divisions == 0:
+        bg = ColorClip(size=(target_width, target_height), color=(0, 0, 0), duration=clip.duration)
+        return CompositeVideoClip([bg, clip.with_position("center")])
+    
+    clip_width, clip_height = clip.size
+    
+    # Calculate division sizes based on orientation
+    if orientation == "horizontal":
+        # Divisions stacked vertically (one above another)
+        div_h = target_height // num_divisions
+        div_h -= div_h % 2
+        div_w = target_width
+        positions = [(0, i * div_h) for i in range(num_divisions)]
+        sizes = [(div_w, div_h) for _ in range(num_divisions)]
+    elif orientation == "vertical":
+        # Divisions side by side horizontally
+        div_w = target_width // num_divisions
+        div_w -= div_w % 2
+        div_h = target_height
+        positions = [(i * div_w, 0) for i in range(num_divisions)]
+        sizes = [(div_w, div_h) for _ in range(num_divisions)]
+    else:  # grid
+        # Calculate grid dimensions
+        cols = int(num_divisions ** 0.5)
+        if cols * cols < num_divisions:
+            cols += 1
+        rows = (num_divisions + cols - 1) // cols
+        
+        div_w = target_width // cols
+        div_w -= div_w % 2
+        div_h = target_height // rows
+        div_h -= div_h % 2
+        
+        positions = []
+        sizes = []
+        for i in range(num_divisions):
+            row = i // cols
+            col = i % cols
+            x = col * div_w
+            y = row * div_h
+            positions.append((x, y))
+            sizes.append((div_w, div_h))
+    
+    # Create black background
+    background = ColorClip(
+        size=(target_width, target_height),
+        color=(0, 0, 0),
+        duration=clip.duration,
+    )
+    
+    clips_to_composite = [background]
+    
+    def cut_region(box):
+        """Crop a region, clamped to the frame."""
+        x = max(0, min(int(box["x"]), clip_width - 1))
+        y = max(0, min(int(box["y"]), clip_height - 1))
+        w = max(10, min(int(box["w"]), clip_width - x))
+        h = max(10, min(int(box["h"]), clip_height - y))
+        return clip.with_effects([Crop(x1=x, y1=y, width=w, height=h)])
+    
+    for i, (div, (x, y), (w, h)) in enumerate(zip(divisions, positions, sizes)):
+        region = div.get("region", DEFAULT_CONTENT)
+        fit = div.get("fit", "fill")
+        zoom = div.get("zoom", 1.0)
+        pos_x = div.get("pos_x", 0.5)
+        pos_y = div.get("pos_y", 0.5)
+        
+        # Apply zoom by cropping a smaller region
+        if zoom != 1.0:
+            new_w = int(region['w'] / zoom)
+            new_h = int(region['h'] / zoom)
+            offset_x = int((region['w'] - new_w) * pos_x)
+            offset_y = int((region['h'] - new_h) * pos_y)
+            region = {
+                'x': region['x'] + offset_x,
+                'y': region['y'] + offset_y,
+                'w': new_w,
+                'h': new_h
+            }
+        
+        # Cut the region from source
+        region_clip = cut_region(region)
+        rw, rh = region_clip.size
+        
+        # Scale to fit the division
+        if fit == "fit":
+            scale = min(w / rw, h / rh)
+        else:  # fill
+            scale = max(w / rw, h / rh)
+        
+        region_clip = region_clip.resized(scale)
+        rw, rh = region_clip.size
+        
+        if fit == "fit":
+            # Center in the division with black bars
+            div_bg = ColorClip(size=(w, h), color=(0, 0, 0), duration=clip.duration)
+            positioned = CompositeVideoClip([
+                div_bg,
+                region_clip.with_position("center"),
+            ])
+        else:
+            # Crop to fill the division (center crop)
+            positioned = region_clip.with_effects([
+                Crop(
+                    x_center=rw / 2,
+                    y_center=rh / 2,
+                    width=w,
+                    height=h,
+                )
+            ])
+        
+        clips_to_composite.append(positioned.with_position((x, y)))
+    
+    return CompositeVideoClip(clips_to_composite)
+
+
 # --------------------------------------------------
 # Timestamp
 # --------------------------------------------------
@@ -765,6 +925,8 @@ def cut_videos(
     band_ratio=None,
     cam_fit=None,
     content_fit=None,
+    divisions=None,
+    orientation="horizontal",
 ):
     os.makedirs(
             "output",
@@ -807,6 +969,8 @@ def cut_videos(
             band_ratio=band_ratio,
             cam_fit=cam_fit,
             content_fit=content_fit,
+            divisions=divisions,
+            orientation=orientation,
         )
 
 

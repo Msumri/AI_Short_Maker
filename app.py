@@ -52,6 +52,9 @@ CONFIG_DEFAULTS = {
     "shorts": 25,
     "duration": "15-60",
     "model": "openrouter/free",
+    # Multi-Divisão settings
+    "multi_divisions": [],
+    "multi_orientation": "horizontal",
 }
 
 # Regions and layout settings come from the persisted config. The dicts are
@@ -987,6 +990,10 @@ async def render_clip(index):
     clip_start = clip["start_time"]
     clip_cam = get_region_at_time(clip_start, 'cam')
     clip_content = get_region_at_time(clip_start, 'content')
+    
+    # Get multi-division settings
+    multi_divisions = config.get("multi_divisions", [])
+    multi_orientation = config.get("multi_orientation", "horizontal")
 
     def work():
         if use_gpu:
@@ -1001,6 +1008,8 @@ async def render_clip(index):
                 band_ratio=config["cam_band_ratio"],
                 cam_fit=config["cam_fit"],
                 content_fit=config["content_fit"],
+                divisions=multi_divisions,
+                orientation=multi_orientation,
             )
         else:
             shortmaker.cut_video_segment(
@@ -1014,6 +1023,8 @@ async def render_clip(index):
                 band_ratio=config["cam_band_ratio"],
                 cam_fit=config["cam_fit"],
                 content_fit=config["content_fit"],
+                divisions=multi_divisions,
+                orientation=multi_orientation,
             )
 
         return out_path
@@ -1373,6 +1384,141 @@ def render_simple_crop_preview(frame, layout):
     
     # Downscale for display
     return resized.resize((270, 480), Image.LANCZOS)
+
+
+def render_multi_division_preview(frame, divisions, orientation="horizontal"):
+    """
+    Render preview for Multi-Divisão 9:16 layout.
+    
+    Composes multiple divisions from the source frame, each with its own
+    region, fit mode, zoom, and position settings.
+    """
+    from PIL import Image
+    
+    out_w, out_h = OUTPUT_WIDTH, OUTPUT_HEIGHT
+    src_w, src_h = frame.size
+    
+    if not divisions:
+        # Fallback - return original frame centered
+        canvas = Image.new("RGB", (out_w, out_h), (0, 0, 0))
+        # Scale frame to fit
+        scale = min(out_w / src_w, out_h / src_h)
+        new_w = int(src_w * scale)
+        new_h = int(src_h * scale)
+        resized = frame.resize((new_w, new_h), Image.LANCZOS)
+        canvas.paste(resized, ((out_w - new_w) // 2, (out_h - new_h) // 2))
+        return canvas.resize((270, 480), Image.LANCZOS)
+    
+    num_divisions = len(divisions)
+    if num_divisions == 0:
+        canvas = Image.new("RGB", (out_w, out_h), (0, 0, 0))
+        scale = min(out_w / src_w, out_h / src_h)
+        new_w = int(src_w * scale)
+        new_h = int(src_h * scale)
+        resized = frame.resize((new_w, new_h), Image.LANCZOS)
+        canvas.paste(resized, ((out_w - new_w) // 2, (out_h - new_h) // 2))
+        return canvas.resize((270, 480), Image.LANCZOS)
+    
+    # Calculate division sizes based on orientation
+    if orientation == "horizontal":
+        # Divisions stacked vertically
+        div_h = out_h // num_divisions
+        div_h -= div_h % 2
+        div_w = out_w
+        positions = [(0, i * div_h) for i in range(num_divisions)]
+        sizes = [(div_w, div_h) for _ in range(num_divisions)]
+    elif orientation == "vertical":
+        # Divisions side by side horizontally
+        div_w = out_w // num_divisions
+        div_w -= div_w % 2
+        div_h = out_h
+        positions = [(i * div_w, 0) for i in range(num_divisions)]
+        sizes = [(div_w, div_h) for _ in range(num_divisions)]
+    else:  # grid
+        cols = int(num_divisions ** 0.5)
+        if cols * cols < num_divisions:
+            cols += 1
+        rows = (num_divisions + cols - 1) // cols
+        
+        div_w = out_w // cols
+        div_w -= div_w % 2
+        div_h = out_h // rows
+        div_h -= div_h % 2
+        
+        positions = []
+        sizes = []
+        for i in range(num_divisions):
+            row = i // cols
+            col = i % cols
+            x = col * div_w
+            y = row * div_h
+            positions.append((x, y))
+            sizes.append((div_w, div_h))
+    
+    # Create black background canvas
+    canvas = Image.new("RGB", (out_w, out_h), (0, 0, 0))
+    
+    def crop_region(box):
+        """Crop a region from source frame, clamped to frame bounds."""
+        x = max(0, min(int(box["x"]), src_w - 1))
+        y = max(0, min(int(box["y"]), src_h - 1))
+        w = max(10, min(int(box["w"]), src_w - x))
+        h = max(10, min(int(box["h"]), src_h - y))
+        return frame.crop((x, y, x + w, y + h))
+    
+    for i, (div, (dx, dy), (dw, dh)) in enumerate(zip(divisions, positions, sizes)):
+        region_config = div.get("region", {"x": 0, "y": 0, "w": src_w, "h": src_h})
+        fit = div.get("fit", "fill")
+        zoom = div.get("zoom", 1.0)
+        pos_x = div.get("pos_x", 0.5)
+        pos_y = div.get("pos_y", 0.5)
+        
+        # Apply zoom by cropping a smaller region
+        if zoom != 1.0:
+            new_w = int(region_config['w'] / zoom)
+            new_h = int(region_config['h'] / zoom)
+            offset_x = int((region_config['w'] - new_w) * pos_x)
+            offset_y = int((region_config['h'] - new_h) * pos_y)
+            region_config = {
+                'x': region_config['x'] + offset_x,
+                'y': region_config['y'] + offset_y,
+                'w': new_w,
+                'h': new_h
+            }
+        
+        # Crop the region from source
+        region_img = crop_region(region_config)
+        rw, rh = region_img.size
+        
+        # Scale to fit the division
+        if fit == "fit":
+            scale = min(dw / rw, dh / rh)
+        else:  # fill
+            scale = max(dw / rw, dh / rh)
+        
+        new_rw = max(1, int(round(rw * scale)))
+        new_rh = max(1, int(round(rh * scale)))
+        region_img = region_img.resize((new_rw, new_rh), Image.LANCZOS)
+        
+        if fit == "fit":
+            # Center in the division with black bars
+            div_canvas = Image.new("RGB", (dw, dh), (0, 0, 0))
+            div_canvas.paste(
+                region_img,
+                ((dw - new_rw) // 2, (dh - new_rh) // 2),
+            )
+        else:
+            # Crop to fill the division (center crop)
+            left = (new_rw - dw) // 2
+            top = (new_rh - dh) // 2
+            div_canvas = region_img.crop((
+                left, top, left + dw, top + dh
+            ))
+        
+        canvas.paste(div_canvas, (dx, dy))
+    
+    # Downscale for display
+    return canvas.resize((270, 480), Image.LANCZOS)
 
 
 # ============================================================
@@ -2216,6 +2362,7 @@ with ui.column().classes("app"):
                     "Fit with White Background (Letterbox)",
                     "Fit with Blurred Background",
                     "Shorts with Cam (9:16)",
+                    "Multi-Divisão 9:16",
                 ],
                 value=config["layout"],
             ).props("outlined dense").classes("layout-input")
@@ -2293,6 +2440,231 @@ with ui.column().classes("app"):
                 ),
                 on_change=lambda: on_fit_change(),
             ).props("outlined dense").classes("layout-input")
+
+        # --- Multi-Divisão UI ---
+        multi_div_container = ui.column().classes("multi-div-container")
+        multi_div_container.visible = (layout_select.value == "Multi-Divisão 9:16")
+
+        def update_multi_div_visibility():
+            multi_div_container.visible = (layout_select.value == "Multi-Divisão 9:16")
+            multi_div_container.update()
+
+        layout_select.on_value_change(update_multi_div_visibility)
+
+        with multi_div_container:
+            ui.label("Multi-Divisão 9:16").classes("form-label section-title")
+            
+            # Orientation selector
+            with ui.row().classes("form-row"):
+                ui.label("Orientação").classes("form-label")
+                orientation_select = ui.select(
+                    ["Horizontal (empilhadas)", "Vertical (lado a lado)", "Grade (grid)"],
+                    value=(
+                        "Horizontal (empilhadas)"
+                        if config.get("multi_orientation") == "horizontal"
+                        else "Vertical (lado a lado)"
+                        if config.get("multi_orientation") == "vertical"
+                        else "Grade (grid)"
+                    ),
+                    on_change=lambda: on_orientation_change(),
+                ).props("outlined dense").classes("layout-input")
+
+            # Divisions list
+            with ui.column().classes("divisions-list"):
+                divisions_container = ui.column().classes("divisions-items")
+
+            # Add division button
+            with ui.row().classes("form-row"):
+                ui.button(
+                    "Adicionar Divisão",
+                    icon="add",
+                    on_click=lambda: add_division(),
+                ).props("outline color=primary")
+
+            # Reset to equal distribution
+            with ui.row().classes("form-row"):
+                ui.button(
+                    "Redistribuir Igualmente",
+                    icon="grid_on",
+                    on_click=lambda: redistribute_divisions(),
+                ).props("outline")
+
+        def on_orientation_change():
+            val = orientation_select.value
+            if val == "Horizontal (empilhadas)":
+                config["multi_orientation"] = "horizontal"
+            elif val == "Vertical (lado a lado)":
+                config["multi_orientation"] = "vertical"
+            else:
+                config["multi_orientation"] = "grid"
+            save_config()
+            update_divisions_ui()
+            update_preview()
+
+        def add_division():
+            """Add a new division with default settings."""
+            if "multi_divisions" not in config:
+                config["multi_divisions"] = []
+            
+            # Default region is the full content area
+            new_div = {
+                "region": dict(DEFAULT_CONTENT),
+                "fit": "fill",
+                "zoom": 1.0,
+                "pos_x": 0.5,
+                "pos_y": 0.5,
+            }
+            config["multi_divisions"].append(new_div)
+            save_config()
+            update_divisions_ui()
+            update_preview()
+
+        def remove_division(index):
+            """Remove a division by index."""
+            if "multi_divisions" in config and 0 <= index < len(config["multi_divisions"]):
+                config["multi_divisions"].pop(index)
+                save_config()
+                update_divisions_ui()
+                update_preview()
+
+        def redistribute_divisions():
+            """Just trigger UI update - divisions are always equally distributed."""
+            update_divisions_ui()
+            update_preview()
+
+        def update_divisions_ui():
+            """Rebuild the divisions UI."""
+            divisions_container.clear()
+            
+            if "multi_divisions" not in config:
+                config["multi_divisions"] = []
+            
+            for i, div in enumerate(config["multi_divisions"]):
+                with divisions_container:
+                    with ui.card().classes("division-card"):
+                        with ui.row().classes("division-header"):
+                            ui.label(f"Divisão {i + 1}").classes("division-title")
+                            ui.space()
+                            ui.button(
+                                icon="delete",
+                                on_click=lambda idx=i: remove_division(idx),
+                            ).props("flat dense size=sm color=negative").tooltip("Remover divisão")
+                        
+                        with ui.row().classes("form-row"):
+                            ui.label("Região (x, y, w, h)").classes("form-label")
+                            with ui.row().classes("gap-1"):
+                                ui.number(
+                                    label="X",
+                                    value=div.get("region", {}).get("x", DEFAULT_CONTENT["x"]),
+                                    on_change=lambda v, idx=i: set_div_region(idx, "x", v),
+                                ).props("dense").classes("small-input")
+                                ui.number(
+                                    label="Y",
+                                    value=div.get("region", {}).get("y", DEFAULT_CONTENT["y"]),
+                                    on_change=lambda v, idx=i: set_div_region(idx, "y", v),
+                                ).props("dense").classes("small-input")
+                                ui.number(
+                                    label="Largura",
+                                    value=div.get("region", {}).get("w", DEFAULT_CONTENT["w"]),
+                                    on_change=lambda v, idx=i: set_div_region(idx, "w", v),
+                                ).props("dense").classes("small-input")
+                                ui.number(
+                                    label="Altura",
+                                    value=div.get("region", {}).get("h", DEFAULT_CONTENT["h"]),
+                                    on_change=lambda v, idx=i: set_div_region(idx, "h", v),
+                                ).props("dense").classes("small-input")
+                        
+                        with ui.row().classes("form-row"):
+                            ui.label("Preenchimento").classes("form-label")
+                            fit_select = ui.select(
+                                ["Fill (corta)", "Fit (mantém tudo)"],
+                                value=(
+                                    "Fit (mantém tudo)"
+                                    if div.get("fit") == "fit"
+                                    else "Fill (corta)"
+                                ),
+                                on_change=lambda v, idx=i: set_div_fit(idx, v),
+                            ).props("outlined dense").classes("layout-input")
+                        
+                        with ui.row().classes("form-row"):
+                            ui.label("Zoom").classes("form-label")
+                            ui.slider(
+                                min=0.1,
+                                max=5.0,
+                                step=0.1,
+                                value=div.get("zoom", 1.0),
+                                on_change=lambda v, idx=i: set_div_zoom(idx, v),
+                            ).props("label-always").classes("w-full")
+                        
+                        with ui.row().classes("form-row"):
+                            ui.label("Posição X / Y (0-1)").classes("form-label")
+                            with ui.row().classes("gap-2"):
+                                ui.slider(
+                                    min=0.0,
+                                    max=1.0,
+                                    step=0.05,
+                                    value=div.get("pos_x", 0.5),
+                                    on_change=lambda v, idx=i: set_div_pos(idx, "x", v),
+                                ).props("label-always").classes("w-1/2").tooltip("0=esquerda, 1=direita")
+                                ui.slider(
+                                    min=0.0,
+                                    max=1.0,
+                                    step=0.05,
+                                    value=div.get("pos_y", 0.5),
+                                    on_change=lambda v, idx=i: set_div_pos(idx, "y", v),
+                                ).props("label-always").classes("w-1/2").tooltip("0=topo, 1=base")
+                        
+                        with ui.row().classes("form-row"):
+                            ui.button(
+                                "Selecionar Área no Vídeo",
+                                icon="crop_free",
+                                on_click=lambda idx=i: pick_division_region(idx),
+                            ).props("outline size=sm").classes("pick-region-btn")
+
+        def set_div_region(index, key, value):
+            if "multi_divisions" in config and 0 <= index < len(config["multi_divisions"]):
+                if "region" not in config["multi_divisions"][index]:
+                    config["multi_divisions"][index]["region"] = dict(DEFAULT_CONTENT)
+                config["multi_divisions"][index]["region"][key] = int(value)
+                save_config()
+                update_preview()
+
+        def set_div_fit(index, value):
+            if "multi_divisions" in config and 0 <= index < len(config["multi_divisions"]):
+                config["multi_divisions"][index]["fit"] = "fit" if value.startswith("Fit") else "fill"
+                save_config()
+                update_preview()
+
+        def set_div_zoom(index, value):
+            if "multi_divisions" in config and 0 <= index < len(config["multi_divisions"]):
+                config["multi_divisions"][index]["zoom"] = float(value)
+                save_config()
+                update_preview()
+
+        def set_div_pos(index, axis, value):
+            if "multi_divisions" in config and 0 <= index < len(config["multi_divisions"]):
+                config["multi_divisions"][index][f"pos_{axis}"] = float(value)
+                save_config()
+                update_preview()
+
+        def pick_division_region(index):
+            """Open region picker for a specific division."""
+            if not selected_video or not os.path.exists(selected_video):
+                set_status("Choose a video before selecting an area.", error=True)
+                return
+            
+            if "multi_divisions" not in config or index >= len(config["multi_divisions"]):
+                return
+            
+            div = config["multi_divisions"][index]
+            target_region = div.get("region", DEFAULT_CONTENT)
+            
+            # We'll reuse the existing pick_region mechanism but for a specific division
+            # For now, just show a message
+            set_status(f"Use os controles de X, Y, Largura, Altura acima para ajustar a Divisão {index + 1}", error=False)
+
+        # Initialize divisions UI
+        update_divisions_ui()
 
     def on_band_change():
         config["cam_band_ratio"] = band_slider.value / 100.0
@@ -2576,7 +2948,35 @@ with ui.column().classes("app"):
 
         with preview_row:
 
-            if layout == "Shorts with Cam (9:16)":
+            if layout == "Multi-Divisão 9:16":
+
+                # Multi-division preview
+                source = active_video()
+
+                if source and os.path.exists(source):
+                    try:
+                        frame = extract_frame(source, preview_timestamp)
+
+                        image = render_multi_division_preview(
+                            frame,
+                            config.get("multi_divisions", []),
+                            config.get("multi_orientation", "horizontal"),
+                        )
+
+                        ui.image(image).classes("preview-image")
+
+                    except Exception as e:
+                        print(f"[WARNING] Preview failed: {e}")
+                        ui.label(
+                            "Could not build the preview."
+                        ).classes("inline-help")
+
+                else:
+                    ui.label(
+                        "Choose a video to see a real preview."
+                    ).classes("inline-help")
+
+            elif layout == "Shorts with Cam (9:16)":
 
                 # Use the active video: after a trim, the preview must
                 # reflect the trimmed file, not the original.

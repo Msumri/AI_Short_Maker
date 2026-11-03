@@ -211,6 +211,8 @@ LAYOUT_ORIGINAL = "original"
 LAYOUT_CROP = "crop"
 LAYOUT_BLUR = "blur"
 LAYOUT_CAM = "cam"
+LAYOUT_LETTERBOX_BLACK = "letterbox_black"
+LAYOUT_LETTERBOX_WHITE = "letterbox_white"
 
 # Fraction of the output height used by the webcam band.
 CAM_BAND_RATIO = 0.30
@@ -237,9 +239,15 @@ COLOR_PARAMS = [
 LAYOUT_MAP = {
     "Do Not Crop (Keep Original Aspect Ratio)": LAYOUT_ORIGINAL,
     "Center Crop (9:16 Full Screen)": LAYOUT_CROP,
+    "Fit with Black Background (Letterbox)": LAYOUT_LETTERBOX_BLACK,
+    "Fit with White Background (Letterbox)": LAYOUT_LETTERBOX_WHITE,
     "Fit with Blurred Background": LAYOUT_BLUR,
     "Shorts with Cam (9:16)": LAYOUT_CAM,
+    "Multi-Divisão 9:16": LAYOUT_MULTI,
 }
+
+
+LAYOUT_MULTI = "multi"
 
 
 def normalize_layout(layout):
@@ -254,6 +262,8 @@ def normalize_layout(layout):
     if layout in (
         LAYOUT_ORIGINAL,
         LAYOUT_CROP,
+        LAYOUT_LETTERBOX_BLACK,
+        LAYOUT_LETTERBOX_WHITE,
         LAYOUT_BLUR,
         LAYOUT_CAM,
     ):
@@ -330,6 +340,8 @@ def build_video_filter(
     band_ratio=None,
     cam_fit=None,
     content_fit=None,
+    divisions=None,
+    orientation="horizontal",
 ):
     """
     Build the FFmpeg filter graph for a layout.
@@ -356,6 +368,22 @@ def build_video_filter(
             f":force_original_aspect_ratio=increase,"
             f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},"
             f"setsar=1[out]",
+            "[out]",
+        )
+
+    if layout == LAYOUT_LETTERBOX_BLACK:
+        return (
+            f"[0:v]scale={OUTPUT_WIDTH}:-2,setsar=1[fg];"
+            f"color=c=black:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:r=30,format=yuv420p[bg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2[out]",
+            "[out]",
+        )
+
+    if layout == LAYOUT_LETTERBOX_WHITE:
+        return (
+            f"[0:v]scale={OUTPUT_WIDTH}:-2,setsar=1[fg];"
+            f"color=c=white:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:r=30,format=yuv420p[bg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2[out]",
             "[out]",
         )
 
@@ -397,7 +425,143 @@ def build_video_filter(
             "[out]",
         )
 
+    if layout == LAYOUT_MULTI:
+        return build_multi_division_filter(
+            cam, content, band_ratio, cam_fit, content_fit, divisions, orientation
+        )
+
     raise ValueError(f"Unknown layout: {layout}")
+
+
+def build_multi_division_filter(
+    cam=None,
+    content=None,
+    band_ratio=None,
+    cam_fit=None,
+    content_fit=None,
+    divisions=None,
+    orientation="horizontal",
+):
+    """
+    Build FFmpeg filter graph for Multi-Divisão 9:16 layout.
+    
+    Args:
+        divisions: List of division configs, each containing:
+            - source: 'cam', 'content', or a video file path
+            - region: dict with x, y, w, h in source coordinates
+            - fit: 'fill' or 'fit'
+            - zoom: float (1.0 = no zoom)
+            - pos_x: float (0.0 to 1.0) for horizontal offset within division
+            - pos_y: float (0.0 to 1.0) for vertical offset within division
+        orientation: 'horizontal' (stacked vertically), 'vertical' (side by side), 'grid'
+    
+    Returns:
+        (filter_complex, output_label) tuple
+    """
+    if not divisions:
+        # Fallback to simple cam layout if no divisions
+        return build_video_filter(
+            LAYOUT_CAM, cam, content, band_ratio, cam_fit, content_fit
+        )
+    
+    num_divisions = len(divisions)
+    if num_divisions == 0:
+        return build_video_filter(
+            LAYOUT_CAM, cam, content, band_ratio, cam_fit, content_fit
+        )
+    
+    # Calculate division sizes based on orientation
+    if orientation == "horizontal":
+        # Divisions stacked vertically (one above another)
+        div_h = OUTPUT_HEIGHT // num_divisions
+        div_h -= div_h % 2  # Ensure even
+        div_w = OUTPUT_WIDTH
+        positions = [(0, i * div_h) for i in range(num_divisions)]
+        sizes = [(div_w, div_h) for _ in range(num_divisions)]
+    elif orientation == "vertical":
+        # Divisions side by side horizontally
+        div_w = OUTPUT_WIDTH // num_divisions
+        div_w -= div_w % 2  # Ensure even
+        div_h = OUTPUT_HEIGHT
+        positions = [(i * div_w, 0) for i in range(num_divisions)]
+        sizes = [(div_w, div_h) for _ in range(num_divisions)]
+    else:  # grid
+        # Calculate grid dimensions
+        cols = int(num_divisions ** 0.5)
+        if cols * cols < num_divisions:
+            cols += 1
+        rows = (num_divisions + cols - 1) // cols
+        
+        div_w = OUTPUT_WIDTH // cols
+        div_w -= div_w % 2
+        div_h = OUTPUT_HEIGHT // rows
+        div_h -= div_h % 2
+        
+        positions = []
+        sizes = []
+        for i in range(num_divisions):
+            row = i // cols
+            col = i % cols
+            x = col * div_w
+            y = row * div_h
+            positions.append((x, y))
+            sizes.append((div_w, div_h))
+    
+    # Build filter complex
+    filter_parts = []
+    overlay_chain = []
+    
+    # Create black background
+    filter_parts.append(
+        f"color=c=black:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:r=30,format=yuv420p[bg]"
+    )
+    last_overlay = "[bg]"
+    
+    for i, (div, (x, y), (w, h)) in enumerate(zip(divisions, positions, sizes)):
+        source_type = div.get("source", "content")
+        region = div.get("region", DEFAULT_CONTENT if source_type == "content" else DEFAULT_CAM)
+        fit = div.get("fit", "fill")
+        zoom = div.get("zoom", 1.0)
+        pos_x = div.get("pos_x", 0.5)  # Center by default
+        pos_y = div.get("pos_y", 0.5)
+        
+        # Build crop and scale for this division
+        crop_str = f"crop={region['w']}:{region['h']}:{region['x']}:{region['y']}"
+        
+        # Apply zoom by scaling the crop region
+        if zoom != 1.0:
+            # Zoom by cropping a smaller region from the center
+            new_w = int(region['w'] / zoom)
+            new_h = int(region['h'] / zoom)
+            offset_x = int((region['w'] - new_w) * pos_x)
+            offset_y = int((region['h'] - new_h) * pos_y)
+            crop_str = f"crop={new_w}:{new_h}:{region['x'] + offset_x}:{region['y'] + offset_y}"
+        
+        # Build fit chain
+        fit_chain = _fit_chain(w, h, fit)
+        
+        # Input stream label
+        input_label = f"[0:v]"
+        
+        # Division output label
+        div_label = f"[div{i}]"
+        
+        filter_parts.append(
+            f"{input_label}{crop_str},{fit_chain},setsar=1{div_label}"
+        )
+        
+        # Overlay onto canvas
+        overlay_label = f"[ov{i}]"
+        filter_parts.append(
+            f"{last_overlay}{div_label}overlay={x}:{y}:format=auto{overlay_label}"
+        )
+        last_overlay = overlay_label
+    
+    # Final output
+    filter_parts.append(f"{last_overlay}format=yuv420p[out]")
+    
+    filter_complex = ";".join(filter_parts)
+    return filter_complex, "[out]"
 
 
 def cut_video_segment(
@@ -411,6 +575,8 @@ def cut_video_segment(
     band_ratio=None,
     cam_fit=None,
     content_fit=None,
+    divisions=None,
+    orientation="horizontal",
 ):
     ffmpeg = get_ffmpeg_path()
     gpu_type = detect_gpu()
@@ -475,7 +641,8 @@ def cut_video_segment(
     # ---------------------------------------------------------
 
     filter_complex, output_label = build_video_filter(
-        layout, cam, content, band_ratio, cam_fit, content_fit
+        layout, cam, content, band_ratio, cam_fit, content_fit,
+        divisions=divisions, orientation=orientation
     )
 
     if filter_complex:
