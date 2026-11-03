@@ -2970,6 +2970,52 @@ with ui.column().classes("app"):
                         d["h"] = h
                 redraw()
             
+            def adjust_editor_time(delta_seconds):
+                """Adjust the editor preview timestamp by delta seconds."""
+                global preview_timestamp
+                nonlocal frame
+                try:
+                    current = parse_timecode(editor_time_input.value)
+                except:
+                    current = preview_timestamp
+                
+                new_time = max(0, current + delta_seconds)
+                
+                # Limit to video duration
+                if selected_video and os.path.exists(selected_video):
+                    try:
+                        duration = trim.probe_duration(selected_video)
+                        new_time = min(new_time, duration)
+                    except:
+                        pass
+                
+                preview_timestamp = new_time
+                editor_time_input.value = format_timecode(new_time)
+            
+            async def refresh_editor_frame():
+                """Reload the frame at the current editor timestamp."""
+                global preview_timestamp
+                nonlocal frame, img_w, img_h
+                try:
+                    preview_timestamp = parse_timecode(editor_time_input.value)
+                except:
+                    set_status("Formato inválido. Use HH:MM:SS", error=True)
+                    return
+                
+                try:
+                    frame = await run.io_bound(extract_frame, selected_video, preview_timestamp)
+                    img_w, img_h = frame.size
+                    preview.source = frame
+                    # Clamp existing drafts to new image size
+                    for d in drafts:
+                        d["w"] = max(10, min(d["w"], img_w))
+                        d["h"] = max(10, min(d["h"], img_h))
+                        d["x"] = max(0, min(d["x"], img_w - d["w"]))
+                        d["y"] = max(0, min(d["y"], img_h - d["h"]))
+                    redraw()
+                except Exception as e:
+                    set_status(f"Erro ao carregar frame: {e}", error=True)
+            
             def apply_and_close():
                 # Save drafts back to config
                 for i, d in enumerate(drafts):
@@ -2984,6 +3030,26 @@ with ui.column().classes("app"):
             
             with ui.dialog() as dialog, ui.card().classes("region-editor-dialog"):
                 ui.label("Editor Visual de Regiões").classes("editor-title")
+                
+                # Timestamp selector for choosing which frame to edit
+                with ui.row().classes("items-center gap-2 editor-timestamp-row"):
+                    ui.label("Frame:").classes("toolbar-label")
+                    editor_time_input = ui.input(
+                        value=format_timecode(preview_timestamp),
+                        placeholder="HH:MM:SS"
+                    ).props("outlined dense").classes("w-24")
+                    ui.button("-10s", on_click=lambda: adjust_editor_time(-10)
+                             ).props("flat dense size=sm")
+                    ui.button("-1s", on_click=lambda: adjust_editor_time(-1)
+                             ).props("flat dense size=sm")
+                    ui.button("+1s", on_click=lambda: adjust_editor_time(1)
+                             ).props("flat dense size=sm")
+                    ui.button("+10s", on_click=lambda: adjust_editor_time(10)
+                             ).props("flat dense size=sm")
+                    ui.button("Atualizar", icon="refresh",
+                             on_click=lambda: refresh_editor_frame()
+                             ).props("outline dense size=sm color=primary")
+                
                 ui.label(
                     f"Clique e arraste para criar/redimensionar. Resolução: {img_w} x {img_h} px. "
                     f"Orientação atual: {orientation}."
