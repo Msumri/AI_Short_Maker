@@ -83,16 +83,24 @@ def cut_video_segment(
         video_bitrate = "1M"
         preset = "ultrafast"
         crf = "28"
-        print("[CPU] PREVIEW MODE: low quality, fast render")
+        # Force software encoding for preview to avoid hardware encoder preset issues
+        codec = "libx264"
+        print("[CPU] PREVIEW MODE: low quality, fast render (software encoding)")
     else:
         target_width = 1080
         target_height = 1920
         video_bitrate = "8M"
         preset = "medium"
         crf = "18"
+        # Use software encoding for reliability (hardware encoders have preset issues)
+        codec = "libx264"
+        print(f"[CPU] Using software encoding (libx264) for reliability")
     
-    codec = get_accelerated_codec()
-    print(f"[INFO] Auto-detected Hardware Acceleration Codec: {codec}")
+    # For hardware encoders (amf, nvenc, qsv), preset is not a valid option
+    # Use ffmpeg_params for encoder-specific quality settings instead
+    is_hardware_encoder = any(x in codec.lower() for x in ["amf", "nvenc", "qsv"])
+    if is_hardware_encoder:
+        preset = None  # Don't pass preset for hardware encoders
     with VideoFileClip(input_file) as video:
         # 1. Slice the clip in time
         cut_clip = video.subclipped(start_time, end_time)
@@ -252,15 +260,19 @@ def cut_video_segment(
         if preview_mode:
             ffmpeg_extra_params += ["-b:v", video_bitrate]
         # 7. Export the final short using your GooeyLogger
-        final_clip.write_videofile(
-            output_file,
-            fps=video.fps,
-            codec=codec,
-            audio_codec="aac",
-            preset=preset,
-            #bitrate=original_bitrate,
-            ffmpeg_params=ffmpeg_extra_params,
-        )
+        # MoviePy always emits "-preset <preset>" before ffmpeg_params.
+        # Hardware encoders (AMF, NVENC, QSV) don't accept standard x264 presets.
+        # For hardware encoders, we omit the preset parameter entirely.
+        write_kwargs = {
+            "fps": video.fps,
+            "codec": codec,
+            "audio_codec": "aac",
+            "ffmpeg_params": ffmpeg_extra_params,
+        }
+        # Only add preset for software encoder (libx264)
+        if codec == "libx264":
+            write_kwargs["preset"] = preset
+        final_clip.write_videofile(output_file, **write_kwargs)
 
 
 # --------------------------------------------------
