@@ -660,11 +660,20 @@ def cut_video_segment(
 
     # Add scale filter for preview mode to reduce resolution
     if preview_mode and filter_complex:
-        # Append scale to the filter complex
-        filter_complex = filter_complex.replace(
-            "[out]",
-            f"scale={target_width}:{target_height}:flags=lanczos[out]"
-        )
+        # Find the LAST occurrence of [out] and insert scale before it
+        # Filter graphs end with something like "setsar=1[out]" or "format=yuv420p[out]"
+        # We need to add ",scale=...[out]" before the final [out]
+        last_out_idx = filter_complex.rfind("[out]")
+        if last_out_idx != -1:
+            # Check if there's already a comma before [out]
+            before_out = filter_complex[:last_out_idx].rstrip()
+            if before_out.endswith(","):
+                # Already ends with comma, just add scale
+                scale_part = f"scale={target_width}:{target_height}:flags=lanczos[out]"
+            else:
+                # Need to add comma before scale
+                scale_part = f",scale={target_width}:{target_height}:flags=lanczos[out]"
+            filter_complex = filter_complex[:last_out_idx] + scale_part + filter_complex[last_out_idx + 5:]
 
     if filter_complex:
 
