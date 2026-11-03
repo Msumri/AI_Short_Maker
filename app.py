@@ -2628,7 +2628,7 @@ with ui.column().classes("app"):
                                     max=5.0,
                                     step=0.1,
                                     value=div.get("zoom", 1.0),
-                                    on_change=lambda v, idx=i: set_div_zoom(idx, v),
+                                    on_change=lambda v, idx=i: set_div_zoom(idx, v.value),
                                 ).props("label-always").classes("w-full")
                             
                             # Position X
@@ -2639,7 +2639,7 @@ with ui.column().classes("app"):
                                     max=1.0,
                                     step=0.05,
                                     value=div.get("pos_x", 0.5),
-                                    on_change=lambda v, idx=i: set_div_pos(idx, "x", v),
+                                    on_change=lambda v, idx=i: set_div_pos(idx, "x", v.value),
                                 ).props("label-always").classes("w-full").tooltip("0=esquerda, 1=direita")
                             
                             # Position Y
@@ -2650,7 +2650,7 @@ with ui.column().classes("app"):
                                     max=1.0,
                                     step=0.05,
                                     value=div.get("pos_y", 0.5),
-                                    on_change=lambda v, idx=i: set_div_pos(idx, "y", v),
+                                    on_change=lambda v, idx=i: set_div_pos(idx, "y", v.value),
                                 ).props("label-always").classes("w-full").tooltip("0=topo, 1=base")
                         
                         # Action buttons row
@@ -2695,7 +2695,8 @@ with ui.column().classes("app"):
 
         def pick_division_region(index):
             """Open the visual editor for all divisions (ignores index)."""
-            ui.run_task(pick_multi_division_regions())
+            # NiceGUI automatically awaits async functions called from event handlers
+            pick_multi_division_regions()
 
         async def pick_multi_division_regions():
             """Open visual editor for all multi-divisão regions at once."""
