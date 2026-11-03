@@ -2693,6 +2693,10 @@ with ui.column().classes("app"):
                 save_config()
                 update_preview()
 
+        def pick_division_region(index):
+            """Open the visual editor for all divisions (ignores index)."""
+            ui.run_task(pick_multi_division_regions())
+
         async def pick_multi_division_regions():
             """Open visual editor for all multi-divisão regions at once."""
             if not selected_video or not os.path.exists(selected_video):
@@ -3003,10 +3007,6 @@ with ui.column().classes("app"):
             
             # We need to update the select when divisions change - store reference
             dialog.on("close", lambda: None)  # placeholder
-
-        def pick_division_region(index):
-            """Open the visual editor for all divisions (ignores index)."""
-            ui.run_task(pick_multi_division_regions())
 
         # Initialize divisions UI
         update_divisions_ui()
