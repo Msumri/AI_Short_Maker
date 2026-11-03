@@ -1113,7 +1113,18 @@ body {
     margin-left: 96px; /* align with form-label width */
 }
 
-/* Override for division number inputs */
+/* Region summary display in division header */
+.region-summary {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+    background: var(--surface-2);
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+}
+
+/* Override for division inputs (kept for any remaining) */
 .division-card .q-field__control {
     background: var(--surface-2) !important;
 }
@@ -1164,4 +1175,60 @@ body {
 /* Select styling in division cards */
 .division-card .q-select .q-field__control {
     background: var(--surface-2) !important;
+}
+
+/* ============================================================
+   MULTI-DIVISÃO REGION EDITOR
+   ============================================================ */
+
+.region-editor-dialog {
+    min-width: 900px;
+    max-width: 95vw;
+    background: var(--surface) !important;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 0 !important;
+}
+
+.region-editor-dialog .q-card__section {
+    padding: 20px 24px;
+    gap: 16px;
+}
+
+.editor-title {
+    font-family: var(--serif);
+    font-size: 22px;
+    color: var(--text);
+    margin: 0;
+}
+
+.editor-hint {
+    font-size: 12px;
+    color: var(--dim);
+    margin: 0;
+}
+
+.region-preview {
+    width: 100%;
+    max-height: 70vh;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--ink);
+    border: 1px solid var(--line);
+}
+
+.editor-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 4px 4px;
+}
+
+.toolbar-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--dim);
 }

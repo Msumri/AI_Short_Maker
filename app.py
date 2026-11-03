@@ -2592,46 +2592,20 @@ with ui.column().classes("app"):
             for i, div in enumerate(config["multi_divisions"]):
                 with divisions_container:
                     with ui.card().classes("division-card"):
-                        # Header with title and delete button
+                        # Header with title, region summary, and delete button
                         with ui.row().classes("division-header items-center"):
                             ui.icon("crop_landscape").classes("division-icon")
                             ui.label(f"Divisão {i + 1}").classes("division-title")
                             ui.space()
+                            # Region summary (read-only display)
+                            r = div.get("region", DEFAULT_CONTENT)
+                            ui.label(f"{r.get('w','?')}×{r.get('h','?')} @ ({r.get('x','?')},{r.get('y','?')})").classes("region-summary")
                             ui.button(
                                 icon="delete",
                                 on_click=lambda idx=i: remove_division(idx),
                             ).props("flat dense size=sm color=negative").tooltip("Remover divisão")
                         
-                        # Region inputs - compact grid
-                        with ui.row().classes("form-row"):
-                            ui.label("Região de origem").classes("form-label")
-                            with ui.row().classes("gap-2 w-full"):
-                                ui.number(
-                                    label="X",
-                                    value=div.get("region", {}).get("x", DEFAULT_CONTENT["x"]),
-                                    on_change=lambda v, idx=i: set_div_region(idx, "x", v),
-                                    min=0, max=9999,
-                                ).props("outlined dense").classes("flex-grow")
-                                ui.number(
-                                    label="Y",
-                                    value=div.get("region", {}).get("y", DEFAULT_CONTENT["y"]),
-                                    on_change=lambda v, idx=i: set_div_region(idx, "y", v),
-                                    min=0, max=9999,
-                                ).props("outlined dense").classes("flex-grow")
-                                ui.number(
-                                    label="Largura",
-                                    value=div.get("region", {}).get("w", DEFAULT_CONTENT["w"]),
-                                    on_change=lambda v, idx=i: set_div_region(idx, "w", v),
-                                    min=1, max=9999,
-                                ).props("outlined dense").classes("flex-grow")
-                                ui.number(
-                                    label="Altura",
-                                    value=div.get("region", {}).get("h", DEFAULT_CONTENT["h"]),
-                                    on_change=lambda v, idx=i: set_div_region(idx, "h", v),
-                                    min=1, max=9999,
-                                ).props("outlined dense").classes("flex-grow")
-                        
-                        # Fit, Zoom, Position in a compact row
+                        # Essential controls row: Fit, Zoom, Position
                         with ui.row().classes("form-row items-end gap-4"):
                             # Fit selector
                             with ui.column().classes("flex-grow"):
@@ -2683,9 +2657,9 @@ with ui.column().classes("app"):
                         with ui.row().classes("form-row division-actions"):
                             ui.space()
                             ui.button(
-                                "Selecionar área no vídeo",
+                                "Editar região visualmente",
                                 icon="crop_free",
-                                on_click=lambda idx=i: pick_division_region(idx),
+                                on_click=lambda: pick_division_region(i),
                             ).props("outline size=sm")
                             ui.button(
                                 "Adicionar outra",
@@ -2719,19 +2693,320 @@ with ui.column().classes("app"):
                 save_config()
                 update_preview()
 
-        def pick_division_region(index):
-            """Open region picker for a specific division."""
+        async def pick_multi_division_regions():
+            """Open visual editor for all multi-divisão regions at once."""
             if not selected_video or not os.path.exists(selected_video):
                 set_status("Choose a video before selecting an area.", error=True)
                 return
             
-            if "multi_divisions" not in config or index >= len(config["multi_divisions"]):
+            if "multi_divisions" not in config or len(config["multi_divisions"]) == 0:
+                set_status("Add at least one division first.", error=True)
                 return
             
-            div = config["multi_divisions"][index]
-            target_region = div.get("region", DEFAULT_CONTENT)
+            try:
+                frame = await run.io_bound(extract_frame, selected_video, preview_timestamp)
+            except Exception as e:
+                set_status(f"Could not read frame: {e}", error=True)
+                return
             
-            set_status(f"Use os controles de X, Y, Largura, Altura acima para ajustar a Divisão {index + 1}", error=False)
+            img_w, img_h = frame.size
+            divisions = config["multi_divisions"]
+            orientation = config.get("multi_orientation", "horizontal")
+            
+            # Work on a copy so cancelling leaves saved regions untouched
+            drafts = []
+            for div in divisions:
+                r = div.get("region", DEFAULT_CONTENT)
+                drafts.append({
+                    "x": max(0, min(r.get("x", 0), img_w - 1)),
+                    "y": max(0, min(r.get("y", 0), img_h - 1)),
+                    "w": max(10, min(r.get("w", DEFAULT_CONTENT["w"]), img_w)),
+                    "h": max(10, min(r.get("h", DEFAULT_CONTENT["h"]), img_h)),
+                })
+            
+            selected_idx = {"value": 0}
+            drag = {"active": False, "mode": None, "start_x": 0, "start_y": 0, "handle": None}
+            syncing = {"on": False}
+            colors = ["#FF8C3F", "#6C63FF", "#4ADE80", "#F87171", "#FFC480", "#F0F2F6", "#CDD1D8", "#8A9099"]
+            
+            def clamp(idx):
+                d = drafts[idx]
+                d["w"] = max(10, min(d["w"], img_w))
+                d["h"] = max(10, min(d["h"], img_h))
+                d["x"] = max(0, min(d["x"], img_w - d["w"]))
+                d["y"] = max(0, min(d["y"], img_h - d["h"]))
+            
+            def svg_content():
+                """Generate SVG with all division rectangles."""
+                rects = []
+                for i, d in enumerate(drafts):
+                    color = colors[i % len(colors)]
+                    sel = "stroke-width='4' stroke-dasharray='8,4'" if i == selected_idx["value"] else "stroke-width='3'"
+                    rects.append(
+                        f'<rect x="{d["x"]}" y="{d["y"]}" width="{d["w"]}" height="{d["h"]}" '
+                        f'fill="{color}33" stroke="{color}" {sel} rx="2" ry="2"/>'
+                    )
+                    # Division number label
+                    rects.append(
+                        f'<text x="{d["x"] + 6}" y="{d["y"] + 18}" '
+                        f'fill="{color}" font-family="JetBrains Mono,monospace" '
+                        f'font-size="12" font-weight="600">{i + 1}</text>'
+                    )
+                return "".join(rects)
+            
+            def redraw():
+                for i in range(len(drafts)):
+                    clamp(i)
+                preview.content = svg_content()
+            
+            def get_handle(x, y, idx):
+                """Check if mouse is over a resize handle. Returns handle name or None."""
+                d = drafts[idx]
+                handles = {
+                    "tl": (d["x"], d["y"]),
+                    "tr": (d["x"] + d["w"], d["y"]),
+                    "bl": (d["x"], d["y"] + d["h"]),
+                    "br": (d["x"] + d["w"], d["y"] + d["h"]),
+                    "t": (d["x"] + d["w"] // 2, d["y"]),
+                    "b": (d["x"] + d["w"] // 2, d["y"] + d["h"]),
+                    "l": (d["x"], d["y"] + d["h"] // 2),
+                    "r": (d["x"] + d["w"], d["y"] + d["h"] // 2),
+                }
+                for name, (hx, hy) in handles.items():
+                    if abs(x - hx) <= 8 and abs(y - hy) <= 8:
+                        return name
+                # Check if inside rect (for move)
+                if d["x"] <= x <= d["x"] + d["w"] and d["y"] <= y <= d["y"] + d["h"]:
+                    return "move"
+                return None
+            
+            def on_pointer(e):
+                if e.type == "pointerdown" and e.button == 0:
+                    # Check if clicking on existing division
+                    for i in reversed(range(len(drafts))):  # topmost first
+                        handle = get_handle(e.image_x, e.image_y, i)
+                        if handle:
+                            selected_idx["value"] = i
+                            drag["active"] = True
+                            drag["mode"] = handle
+                            drag["start_x"] = e.image_x
+                            drag["start_y"] = e.image_y
+                            drag["orig"] = dict(drafts[i])
+                            redraw()
+                            return
+                    
+                    # Click on empty space - create new division or select nearest
+                    if len(drafts) < 8:  # max 8 divisions
+                        # Start drawing new division
+                        selected_idx["value"] = len(drafts)
+                        drafts.append({"x": int(e.image_x), "y": int(e.image_y), "w": 10, "h": 10})
+                        drag["active"] = True
+                        drag["mode"] = "br"  # resize from bottom-right
+                        drag["start_x"] = e.image_x
+                        drag["start_y"] = e.image_y
+                        redraw()
+                
+                elif e.type == "pointermove" and drag["active"] and drag["mode"]:
+                    idx = selected_idx["value"]
+                    if idx >= len(drafts):
+                        return
+                    d = drafts[idx]
+                    ox, oy = drag["orig"]["x"], drag["orig"]["y"]
+                    ow, oh = drag["orig"]["w"], drag["orig"]["h"]
+                    dx = e.image_x - drag["start_x"]
+                    dy = e.image_y - drag["start_y"]
+                    mode = drag["mode"]
+                    
+                    if mode == "move":
+                        d["x"] = ox + dx
+                        d["y"] = oy + dy
+                    elif mode == "tl":
+                        d["x"] = ox + dx
+                        d["y"] = oy + dy
+                        d["w"] = ow - dx
+                        d["h"] = oh - dy
+                    elif mode == "tr":
+                        d["y"] = oy + dy
+                        d["w"] = ow + dx
+                        d["h"] = oh - dy
+                    elif mode == "bl":
+                        d["x"] = ox + dx
+                        d["w"] = ow - dx
+                        d["h"] = oh + dy
+                    elif mode == "br":
+                        d["w"] = ow + dx
+                        d["h"] = oh + dy
+                    elif mode == "t":
+                        d["y"] = oy + dy
+                        d["h"] = oh - dy
+                    elif mode == "b":
+                        d["h"] = oh + dy
+                    elif mode == "l":
+                        d["x"] = ox + dx
+                        d["w"] = ow - dx
+                    elif mode == "r":
+                        d["w"] = ow + dx
+                    
+                    redraw()
+                
+                elif e.type == "pointerup":
+                    drag["active"] = False
+                    drag["mode"] = None
+            
+            def delete_selected():
+                if len(drafts) > 0:
+                    idx = selected_idx["value"]
+                    if 0 <= idx < len(drafts):
+                        drafts.pop(idx)
+                        selected_idx["value"] = min(idx, len(drafts) - 1)
+                        redraw()
+            
+            def align_selected(where):
+                if not drafts:
+                    return
+                d = drafts[selected_idx["value"]]
+                if where == "left":
+                    d["x"] = 0
+                elif where == "hcenter":
+                    d["x"] = (img_w - d["w"]) // 2
+                elif where == "right":
+                    d["x"] = img_w - d["w"]
+                elif where == "top":
+                    d["y"] = 0
+                elif where == "vcenter":
+                    d["y"] = (img_h - d["h"]) // 2
+                elif where == "bottom":
+                    d["y"] = img_h - d["h"]
+                redraw()
+            
+            def distribute_all():
+                """Auto-distribute all divisions based on orientation."""
+                n = len(drafts)
+                if n == 0:
+                    return
+                
+                if orientation == "horizontal":
+                    # Stack vertically, equal height, full width
+                    h = img_h // n
+                    h -= h % 2
+                    for i, d in enumerate(drafts):
+                        d["x"] = 0
+                        d["y"] = i * h
+                        d["w"] = img_w
+                        d["h"] = h
+                elif orientation == "vertical":
+                    # Side by side, equal width, full height
+                    w = img_w // n
+                    w -= w % 2
+                    for i, d in enumerate(drafts):
+                        d["x"] = i * w
+                        d["y"] = 0
+                        d["w"] = w
+                        d["h"] = img_h
+                else:  # grid
+                    cols = int(n ** 0.5)
+                    if cols * cols < n:
+                        cols += 1
+                    rows = (n + cols - 1) // cols
+                    w = img_w // cols
+                    w -= w % 2
+                    h = img_h // rows
+                    h -= h % 2
+                    for i, d in enumerate(drafts):
+                        row = i // cols
+                        col = i % cols
+                        d["x"] = col * w
+                        d["y"] = row * h
+                        d["w"] = w
+                        d["h"] = h
+                redraw()
+            
+            def apply_and_close():
+                # Save drafts back to config
+                for i, d in enumerate(drafts):
+                    if i < len(config["multi_divisions"]):
+                        config["multi_divisions"][i]["region"] = {
+                            "x": d["x"], "y": d["y"], "w": d["w"], "h": d["h"]
+                        }
+                save_config()
+                update_divisions_ui()
+                update_preview()
+                dialog.close()
+            
+            with ui.dialog() as dialog, ui.card().classes("region-editor-dialog"):
+                ui.label("Editor Visual de Regiões").classes("editor-title")
+                ui.label(
+                    f"Clique e arraste para criar/redimensionar. Resolução: {img_w} x {img_h} px. "
+                    f"Orientação atual: {orientation}."
+                ).classes("editor-hint")
+                
+                preview = ui.interactive_image(
+                    source=frame,
+                    events=["pointerdown", "pointermove", "pointerup"],
+                    on_mouse=on_pointer,
+                    cross=False,
+                ).classes("region-preview")
+                preview.content = svg_content()
+                
+                # Toolbar
+                with ui.row().classes("editor-toolbar"):
+                    # Division selector
+                    with ui.row().classes("items-center gap-2"):
+                        ui.label("Divisão:").classes("toolbar-label")
+                        div_select = ui.select(
+                            [f"Divisão {i+1}" for i in range(len(drafts))],
+                            value=f"Divisão {selected_idx['value'] + 1}",
+                            on_change=lambda v: setattr(selected_idx, "value", int(v.split()[-1]) - 1)
+                        ).props("outlined dense").classes("w-32")
+                    
+                    ui.space()
+                    
+                    # Alignment
+                    with ui.row().classes("items-center gap-1"):
+                        ui.label("Alinhar:").classes("toolbar-label")
+                        for icon, where, tip in (
+                            ("align_horizontal_left", "left", "Esquerda"),
+                            ("align_horizontal_center", "hcenter", "Centro H"),
+                            ("align_horizontal_right", "right", "Direita"),
+                            ("align_vertical_top", "top", "Topo"),
+                            ("align_vertical_center", "vcenter", "Centro V"),
+                            ("align_vertical_bottom", "bottom", "Base"),
+                        ):
+                            ui.button(icon=icon, on_click=lambda w=where: align_selected(w)
+                                     ).props("flat dense round size=sm").tooltip(tip)
+                    
+                    ui.separator().props("vertical")
+                    
+                    # Actions
+                    ui.button("Distribuir Igualmente", icon="grid_on",
+                              on_click=distribute_all).props("outline dense size=sm")
+                    ui.button("Excluir Selecionada", icon="delete",
+                              on_click=delete_selected, color="negative"
+                             ).props("flat dense size=sm")
+                    
+                    ui.space()
+                    
+                    # Confirm/Cancel
+                    ui.button("Cancelar", on_click=dialog.close).props("flat")
+                    ui.button("Aplicar", icon="check", on_click=apply_and_close
+                             ).props("unelevated color=primary")
+            
+            dialog.open()
+            
+            # Watch for division count changes to update select
+            def update_select():
+                div_select.options = [f"Divisão {i+1}" for i in range(len(drafts))]
+                if selected_idx["value"] >= len(drafts):
+                    selected_idx["value"] = max(0, len(drafts) - 1)
+                div_select.value = f"Divisão {selected_idx['value'] + 1}" if drafts else None
+                div_select.update()
+            
+            # We need to update the select when divisions change - store reference
+            dialog.on("close", lambda: None)  # placeholder
+
+        def pick_division_region(index):
+            """Open the visual editor for all divisions (ignores index)."""
+            ui.run_task(pick_multi_division_regions())
 
         # Initialize divisions UI
         update_divisions_ui()
