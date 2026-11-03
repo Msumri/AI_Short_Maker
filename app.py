@@ -2617,7 +2617,7 @@ with ui.column().classes("app"):
                                         if div.get("fit") == "fit"
                                         else "Fill (corta)"
                                     ),
-                                    on_change=lambda v, idx=i: set_div_fit(idx, v),
+                                    on_change=lambda v, idx=i: set_div_fit(idx, v.value),
                                 ).props("outlined dense").classes("w-full")
                             
                             # Zoom slider
