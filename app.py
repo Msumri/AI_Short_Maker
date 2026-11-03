@@ -2731,6 +2731,7 @@ with ui.column().classes("app"):
             selected_idx = {"value": 0}
             drag = {"active": False, "mode": None, "start_x": 0, "start_y": 0, "handle": None}
             syncing = {"on": False}
+            aspect_lock = {"enabled": False, "ratio": None}  # (w, h) tuple or None for free
             colors = ["#FF8C3F", "#6C63FF", "#4ADE80", "#F87171", "#FFC480", "#F0F2F6", "#CDD1D8", "#8A9099"]
             
             def clamp(idx):
@@ -2851,6 +2852,24 @@ with ui.column().classes("app"):
                     elif mode == "r":
                         d["w"] = ow + dx
                     
+                    # Apply aspect ratio lock if enabled (on corner/border resize, not move)
+                    if aspect_lock["enabled"] and aspect_lock["ratio"] and mode != "move":
+                        rw, rh = aspect_lock["ratio"]
+                        target_ratio = rw / rh
+                        # Determine which dimension to prioritize based on handle
+                        if mode in ("tl", "tr", "bl", "br"):  # corner - adjust both
+                            current_ratio = d["w"] / d["h"] if d["h"] > 0 else target_ratio
+                            if current_ratio > target_ratio:
+                                # Too wide, adjust width
+                                d["w"] = max(10, int(d["h"] * target_ratio))
+                            else:
+                                # Too tall, adjust height
+                                d["h"] = max(10, int(d["w"] / target_ratio))
+                        elif mode in ("t", "b"):  # vertical edge - adjust width from height
+                            d["w"] = max(10, int(d["h"] * target_ratio))
+                        elif mode in ("l", "r"):  # horizontal edge - adjust height from width
+                            d["h"] = max(10, int(d["w"] / target_ratio))
+                    
                     redraw()
                 
                 elif e.type == "pointerup":
@@ -2882,6 +2901,32 @@ with ui.column().classes("app"):
                 elif where == "bottom":
                     d["y"] = img_h - d["h"]
                 redraw()
+            
+            def set_width(value):
+                if not drafts:
+                    return
+                d = drafts[selected_idx["value"]]
+                d["w"] = max(10, min(int(value), img_w))
+                # If aspect lock is on, adjust height
+                if aspect_lock["enabled"] and aspect_lock["ratio"]:
+                    rw, rh = aspect_lock["ratio"]
+                    d["h"] = max(10, int(d["w"] / (rw / rh)))
+                redraw()
+                width_input.value = d["w"]
+                height_input.value = d["h"]
+            
+            def set_height(value):
+                if not drafts:
+                    return
+                d = drafts[selected_idx["value"]]
+                d["h"] = max(10, min(int(value), img_h))
+                # If aspect lock is on, adjust width
+                if aspect_lock["enabled"] and aspect_lock["ratio"]:
+                    rw, rh = aspect_lock["ratio"]
+                    d["w"] = max(10, int(d["h"] * (rw / rh)))
+                redraw()
+                width_input.value = d["w"]
+                height_input.value = d["h"]
             
             def distribute_all():
                 """Auto-distribute all divisions based on orientation."""
@@ -2981,6 +3026,61 @@ with ui.column().classes("app"):
                     
                     ui.separator().props("vertical")
                     
+                    # Aspect Ratio Presets
+                    with ui.row().classes("items-center gap-1"):
+                        ui.label("Proporção:").classes("toolbar-label")
+                        # Free (no lock)
+                        def set_aspect(w, h):
+                            aspect_lock["enabled"] = True
+                            aspect_lock["ratio"] = (w, h)
+                            # Apply to current division immediately
+                            idx = selected_idx["value"]
+                            if 0 <= idx < len(drafts):
+                                d = drafts[idx]
+                                # Adjust height to match ratio based on current width
+                                d["h"] = max(10, int(d["w"] / (w / h)))
+                                redraw()
+                                width_input.value = d["w"]
+                                height_input.value = d["h"]
+                                width_input.update()
+                                height_input.update()
+                        def clear_aspect():
+                            aspect_lock["enabled"] = False
+                            aspect_lock["ratio"] = None
+                        
+                        ui.button("Livre", on_click=clear_aspect
+                                 ).props("flat dense size=sm outline").tooltip("Sem proporção fixa")
+                        for w, h, label in (
+                            (1, 1, "1:1"),
+                            (16, 9, "16:9"),
+                            (9, 16, "9:16"),
+                            (4, 3, "4:3"),
+                            (3, 4, "3:4"),
+                            (21, 9, "21:9"),
+                        ):
+                            ui.button(label, on_click=lambda w=w, h=h: set_aspect(w, h)
+                                     ).props("flat dense size=sm outline").tooltip(f"Proporção {label}")
+                    
+                    ui.separator().props("vertical")
+                    
+                    # Size inputs (width/height)
+                    with ui.row().classes("items-center gap-2"):
+                        ui.label("Largura:").classes("toolbar-label")
+                        width_input = ui.number(
+                            value=drafts[selected_idx["value"]]["w"] if drafts else 100,
+                            min=10, max=img_w, step=1,
+                            on_change=lambda v: set_width(v.value)
+                        ).props("outlined dense").classes("w-24")
+                        
+                        ui.label("Altura:").classes("toolbar-label")
+                        height_input = ui.number(
+                            value=drafts[selected_idx["value"]]["h"] if drafts else 100,
+                            min=10, max=img_h, step=1,
+                            on_change=lambda v: set_height(v.value)
+                        ).props("outlined dense").classes("w-24")
+                    
+                    ui.separator().props("vertical")
+                    
                     # Actions
                     ui.button("Distribuir Igualmente", icon="grid_on",
                               on_click=distribute_all).props("outline dense size=sm")
@@ -3004,6 +3104,13 @@ with ui.column().classes("app"):
                     selected_idx["value"] = max(0, len(drafts) - 1)
                 div_select.value = f"Divisão {selected_idx['value'] + 1}" if drafts else None
                 div_select.update()
+                # Update width/height inputs
+                if drafts and 0 <= selected_idx["value"] < len(drafts):
+                    d = drafts[selected_idx["value"]]
+                    width_input.value = d["w"]
+                    height_input.value = d["h"]
+                    width_input.update()
+                    height_input.update()
             
             # We need to update the select when divisions change - store reference
             dialog.on("close", lambda: None)  # placeholder
