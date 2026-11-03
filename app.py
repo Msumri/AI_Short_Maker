@@ -9,6 +9,8 @@ import subprocess
 import tkinter as tk
 from tkinter import filedialog
 
+import cv2
+import numpy as np
 import requests
 from nicegui import ui, run, app, core
 from fastapi import Response
@@ -3032,6 +3034,118 @@ with ui.column().classes("app"):
                 except Exception as e:
                     set_status(f"Erro ao carregar frame: {e}", error=True)
             
+            def detect_faces_in_frame(pil_frame):
+                """Detect faces in a PIL frame using OpenCV Haar cascade.
+                Returns list of (x, y, w, h) face rectangles in image coordinates."""
+                try:
+                    # Convert PIL to OpenCV format
+                    cv_image = cv2.cvtColor(np.array(pil_frame), cv2.COLOR_RGB2BGR)
+                    gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+                    
+                    # Load Haar cascade for face detection (local file)
+                    cascade_path = os.path.join(os.path.dirname(__file__), 'haarcascade_frontalface_default.xml')
+                    face_cascade = cv2.CascadeClassifier(cascade_path)
+                    
+                    if face_cascade.empty():
+                        set_status("Erro: Cascade classifier não carregado", error=True)
+                        return []
+                    
+                    # Detect faces
+                    faces = face_cascade.detectMultiScale(
+                        gray,
+                        scaleFactor=1.1,
+                        minNeighbors=5,
+                        minSize=(30, 30),
+                        flags=cv2.CASCADE_SCALE_IMAGE
+                    )
+                    
+                    # Convert to list of (x, y, w, h)
+                    return [(int(x), int(y), int(w), int(h)) for (x, y, w, h) in faces]
+                except Exception as e:
+                    set_status(f"Erro na detecção: {e}", error=True)
+                    return []
+            
+            def auto_fit_faces():
+                """Detect faces and create/adjust divisions to fit each face."""
+                nonlocal drafts
+                
+                faces = detect_faces_in_frame(frame)
+                if not faces:
+                    set_status("Nenhum rosto detectado neste frame", error=True)
+                    return
+                
+                # Sort faces by x position (left to right)
+                faces.sort(key=lambda f: f[0])
+                
+                # Limit to number of divisions or create new ones
+                num_faces = min(len(faces), len(drafts) if drafts else len(faces))
+                
+                # If no drafts, create them
+                if not drafts:
+                    drafts = []
+                
+                # Ensure we have enough drafts
+                while len(drafts) < num_faces:
+                    drafts.append({"x": 0, "y": 0, "w": 100, "h": 100})
+                
+                # Fit each division to a face with some padding
+                padding = 20  # pixels
+                for i in range(num_faces):
+                    fx, fy, fw, fh = faces[i]
+                    
+                    # Add padding around face
+                    x = max(0, fx - padding)
+                    y = max(0, fy - padding)
+                    w = min(img_w - x, fw + 2 * padding)
+                    h = min(img_h - y, fh + 2 * padding)
+                    
+                    # Ensure even dimensions (required for video encoding)
+                    w = w - (w % 2)
+                    h = h - (h % 2)
+                    
+                    drafts[i]["x"] = x
+                    drafts[i]["y"] = y
+                    drafts[i]["w"] = max(10, w)
+                    drafts[i]["h"] = max(10, h)
+                
+                # Remove excess drafts if more drafts than faces
+                if len(drafts) > num_faces:
+                    drafts = drafts[:num_faces]
+                    selected_idx["value"] = min(selected_idx["value"], num_faces - 1)
+                
+                redraw()
+                update_select()
+                set_status(f"Detectados {len(faces)} rosto(s). {num_faces} divisão(ões) ajustada(s).")
+            
+            def center_on_faces():
+                """Center existing divisions on detected faces without resizing."""
+                nonlocal drafts
+                
+                if not drafts:
+                    set_status("Nenhuma divisão para centralizar", error=True)
+                    return
+                
+                faces = detect_faces_in_frame(frame)
+                if not faces:
+                    set_status("Nenhum rosto detectado neste frame", error=True)
+                    return
+                
+                # Sort faces by x position
+                faces.sort(key=lambda f: f[0])
+                
+                # Assign each division to a face (round-robin if more divisions than faces)
+                for i, d in enumerate(drafts):
+                    face_idx = i % len(faces)
+                    fx, fy, fw, fh = faces[face_idx]
+                    
+                    # Center division on face
+                    d["x"] = max(0, min(fx + fw // 2 - d["w"] // 2, img_w - d["w"]))
+                    d["y"] = max(0, min(fy + fh // 2 - d["h"] // 2, img_h - d["h"]))
+                
+                redraw()
+                update_select()
+                set_status(f"Divisões centralizadas em {len(faces)} rosto(s) detectado(s).")
+            
             def apply_and_close():
                 # Save drafts back to config
                 for i, d in enumerate(drafts):
@@ -3178,6 +3292,18 @@ with ui.column().classes("app"):
                             min=0, max=img_h, step=1,
                             on_change=lambda v: set_y(v.value)
                         ).props("outlined dense").classes("w-24")
+                    
+                    ui.separator().props("vertical")
+                    
+                    # AI Face Detection
+                    with ui.row().classes("items-center gap-1"):
+                        ui.label("IA:").classes("toolbar-label")
+                        ui.button("Detectar Rostos", icon="face",
+                                  on_click=lambda: auto_fit_faces()
+                                 ).props("outline dense size=sm color=primary").tooltip("Detecta rostos no frame e ajusta divisões")
+                        ui.button("Centralizar em Rostos", icon="center_focus_strong",
+                                  on_click=lambda: center_on_faces()
+                                 ).props("flat dense size=sm").tooltip("Centraliza divisões existentes nos rostos detectados")
                     
                     ui.separator().props("vertical")
                     
