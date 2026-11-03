@@ -235,6 +235,8 @@ COLOR_PARAMS = [
     "-color_trc", "bt709",
 ]
 
+LAYOUT_MULTI = "multi"
+
 # Maps the labels shown in the UI to the internal layout names.
 LAYOUT_MAP = {
     "Do Not Crop (Keep Original Aspect Ratio)": LAYOUT_ORIGINAL,
@@ -245,9 +247,6 @@ LAYOUT_MAP = {
     "Shorts with Cam (9:16)": LAYOUT_CAM,
     "Multi-Divisão 9:16": LAYOUT_MULTI,
 }
-
-
-LAYOUT_MULTI = "multi"
 
 
 def normalize_layout(layout):
