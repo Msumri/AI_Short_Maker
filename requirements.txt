@@ -2,3 +2,5 @@ nicegui
 requests
 moviepy
 openai
+pywhispercpp
+ffmpeg-python

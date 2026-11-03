@@ -241,9 +241,6 @@ LAYOUT_MULTI = "multi"
 LAYOUT_MAP = {
     "Do Not Crop (Keep Original Aspect Ratio)": LAYOUT_ORIGINAL,
     "Center Crop (9:16 Full Screen)": LAYOUT_CROP,
-    "Fit with Black Background (Letterbox)": LAYOUT_LETTERBOX_BLACK,
-    "Fit with White Background (Letterbox)": LAYOUT_LETTERBOX_WHITE,
-    "Fit with Blurred Background": LAYOUT_BLUR,
     "Shorts with Cam (9:16)": LAYOUT_CAM,
     "Multi-Divisão 9:16": LAYOUT_MULTI,
 }
@@ -261,10 +258,8 @@ def normalize_layout(layout):
     if layout in (
         LAYOUT_ORIGINAL,
         LAYOUT_CROP,
-        LAYOUT_LETTERBOX_BLACK,
-        LAYOUT_LETTERBOX_WHITE,
-        LAYOUT_BLUR,
         LAYOUT_CAM,
+        LAYOUT_MULTI,
     ):
         return layout
 
@@ -576,6 +571,8 @@ def cut_video_segment(
     content_fit=None,
     divisions=None,
     orientation="horizontal",
+    preview_mode=False,
+    preview_duration=None,
 ):
     ffmpeg = get_ffmpeg_path()
     gpu_type = detect_gpu()
@@ -584,6 +581,23 @@ def cut_video_segment(
     end_seconds = timestamp_to_seconds(end_time)
     duration = end_seconds - start_seconds
 
+    # Preview mode: use shorter duration, lower quality, smaller resolution
+    if preview_mode and preview_duration:
+        duration = min(preview_duration, duration)
+        target_width = 480
+        target_height = 854
+        video_bitrate = "1M"
+        preset = "p1"  # Fastest for NVIDIA
+        cpu_preset = "ultrafast"
+        crf = "28"
+    else:
+        target_width = 1080
+        target_height = 1920
+        video_bitrate = "8M"
+        preset = "p1"
+        cpu_preset = "medium"
+        crf = "18"
+
     if duration <= 0:
         raise ValueError(
             f"Invalid segment duration: "
@@ -591,7 +605,7 @@ def cut_video_segment(
         )
 
     print(
-        f"\n[GPU] Selected pipeline: {gpu_type}",
+        f"\n[GPU] Selected pipeline: {gpu_type}" + (" (PREVIEW MODE)" if preview_mode else ""),
         flush=True
     )
 
@@ -644,10 +658,18 @@ def cut_video_segment(
         divisions=divisions, orientation=orientation
     )
 
+    # Add scale filter for preview mode to reduce resolution
+    if preview_mode and filter_complex:
+        # Append scale to the filter complex
+        filter_complex = filter_complex.replace(
+            "[out]",
+            f"scale={target_width}:{target_height}:flags=lanczos[out]"
+        )
+
     if filter_complex:
 
         print(
-            f"[GPU] Layout: {normalize_layout(layout)}",
+            f"[GPU] Layout: {normalize_layout(layout)}" + (" (PREVIEW MODE)" if preview_mode else ""),
             flush=True
         )
 
@@ -666,13 +688,23 @@ def cut_video_segment(
         # NO VIDEO FILTER (original resolution passthrough)
         # -----------------------------------------------------
 
-        command += [
-            "-map",
-            "0:v:0",
-
-            "-map",
-            "0:a?",
-        ]
+        if preview_mode:
+            # Add scale filter for preview mode
+            command += [
+                "-vf",
+                f"scale={target_width}:{target_height}:flags=lanczos",
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+            ]
+        else:
+            command += [
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+            ]
 
     # ---------------------------------------------------------
     # Video encoder
@@ -684,9 +716,9 @@ def cut_video_segment(
             "-c:v",
             "h264_nvenc",
             "-preset",
-            "p1",
+            preset,  # p1 for preview, p1 for normal (fastest)
             "-b:v",
-            "8M",
+            video_bitrate,
         ]
 
     elif gpu_type == "videotoolbox":
@@ -695,7 +727,7 @@ def cut_video_segment(
             "-c:v",
             "h264_videotoolbox",
             "-b:v",
-            "8M",
+            video_bitrate,
         ]
 
     elif gpu_type == "amd":
@@ -706,7 +738,7 @@ def cut_video_segment(
             "-quality",
             "speed",
             "-b:v",
-            "8M",
+            video_bitrate,
         ]
 
     else:
@@ -715,9 +747,9 @@ def cut_video_segment(
             "-c:v",
             "libx264",
             "-preset",
-            "medium",
+            cpu_preset,  # ultrafast for preview, medium for normal
             "-crf",
-            "18",
+            crf,  # 28 for preview, 18 for normal
         ]
 
     # ---------------------------------------------------------

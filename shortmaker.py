@@ -73,14 +73,35 @@ def cut_video_segment(
     content_fit=None,
     divisions=None,
     orientation="horizontal",
+    preview_mode=False,
+    preview_duration=None,
 ):
-    target_width = 1080
-    target_height = 1920
+    # Preview mode settings
+    if preview_mode and preview_duration:
+        target_width = 480
+        target_height = 854
+        video_bitrate = "1M"
+        preset = "ultrafast"
+        crf = "28"
+        print("[CPU] PREVIEW MODE: low quality, fast render")
+    else:
+        target_width = 1080
+        target_height = 1920
+        video_bitrate = "8M"
+        preset = "medium"
+        crf = "18"
+    
     codec = get_accelerated_codec()
     print(f"[INFO] Auto-detected Hardware Acceleration Codec: {codec}")
     with VideoFileClip(input_file) as video:
         # 1. Slice the clip in time
         cut_clip = video.subclipped(start_time, end_time)
+        
+        # Preview mode: trim to preview duration
+        if preview_mode and preview_duration:
+            clip_duration = cut_clip.duration
+            if clip_duration > preview_duration:
+                cut_clip = cut_clip.subclipped(0, preview_duration)
         
         if layout_style =="Center Crop (9:16 Full Screen)":
             # 2. Extract dimensions using the new .size property: (width, height)
@@ -100,76 +121,6 @@ def cut_video_segment(
             ])
             # 5. Resize to explicit resolution using .resized()
             final_clip = cropped_clip.resized((target_width, target_height))
-        elif layout_style == "Fit with Black Background (Letterbox)":
-            resized_clip = cut_clip.resized(width=target_width)
-                
-            # 3. Create a blank vertical canvas (1080x1920) matching the subclip's exact duration
-            background = ColorClip(
-                size=(target_width, target_height), 
-                color=(0, 0, 0), 
-                duration=cut_clip.duration
-            )
-            
-            # 4. Composite them together, telling the video clip to sit dead center
-            # In MoviePy 2.0+, positioning is passed directly into the array layout configuration
-            final_clip = CompositeVideoClip([
-                background, 
-                resized_clip.with_position("center")
-            ])    
-        elif layout_style == "Fit with White Background (Letterbox)":
-            resized_clip = cut_clip.resized(width=target_width)
-                
-            # 3. Create a blank vertical canvas (1080x1920) matching the subclip's exact duration
-            background = ColorClip(
-                size=(target_width, target_height), 
-                color=(255, 255, 255), 
-                duration=cut_clip.duration
-            )
-            
-            # 4. Composite them together, telling the video clip to sit dead center
-            final_clip = CompositeVideoClip([
-                background,
-                resized_clip.with_position("center")
-            ])
-        elif layout_style == "Fit with Blurred Background":
-            # Blurred copy of the frame fills the vertical canvas, with the
-            # untouched frame centered on top of it.
-            #
-            # MoviePy 2.x has no GaussianBlur effect (only HeadBlur), so the
-            # blur is applied per frame with PIL. image_transform hands the
-            # frame over as a numpy array, so convert both ways.
-            from PIL import Image, ImageFilter
-
-            def blur_frame(frame):
-                return np.asarray(
-                    Image.fromarray(frame).filter(
-                        ImageFilter.GaussianBlur(25)
-                    )
-                )
-
-            clip_width, clip_height = cut_clip.size
-
-            # Cover the canvas: scale so the shorter side fills the target.
-            scale = max(
-                target_width / clip_width,
-                target_height / clip_height,
-            )
-
-            background = cut_clip.resized(scale).with_effects([
-                Crop(
-                    x_center=clip_width * scale / 2,
-                    y_center=clip_height * scale / 2,
-                    width=target_width,
-                    height=target_height,
-                )
-            ]).image_transform(blur_frame)
-
-            foreground = cut_clip.resized(width=target_width)
-
-            final_clip = CompositeVideoClip([
-                background,
-                foreground.with_position("center"),
-            ])
         elif layout_style == "Shorts with Cam (9:16)":
             # Recut the webcam and content regions out of the source and
             # stack them: webcam in the top band, content in the band below.
@@ -290,16 +241,16 @@ def cut_video_segment(
         # MoviePy always emits "-preset <preset>" before ffmpeg_params, so the
         # value must be valid for the selected encoder. h264_amf rejects
         # "medium" (it only accepts balanced/speed/quality/high_quality).
-        preset = "medium"
-
         if codec == "h264_nvenc":
             ffmpeg_extra_params += ["-preset", "p4", "-tune", "hq"]
         elif codec == "h264_amf":
-            preset = "speed"
             ffmpeg_extra_params += ["-quality", "speed"]
         elif codec == "h264_videotoolbox":
-            preset = "medium"
             ffmpeg_extra_params += ["-realtime", "true"]
+
+        # Add bitrate for preview mode
+        if preview_mode:
+            ffmpeg_extra_params += ["-b:v", video_bitrate]
         # 7. Export the final short using your GooeyLogger
         final_clip.write_videofile(
             output_file,

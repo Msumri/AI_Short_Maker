@@ -3,18 +3,20 @@ import io
 import json
 import asyncio
 import hashlib
+import math
 import re
 import shutil
 import subprocess
 import tkinter as tk
 from tkinter import filedialog
+from pathlib import Path
 
-import cv2
 import numpy as np
 import requests
 from nicegui import ui, run, app, core
 from fastapi import Response
 from fastapi.responses import FileResponse
+from starlette.staticfiles import StaticFiles
 
 import shortmaker
 import shortmakergpu
@@ -744,7 +746,80 @@ def _clean_json_reply(content):
         if start != -1 and end != -1 and end > start:
             text = text[start:end + 1]
 
+    # Fix common JSON issues
+    # 1. Remove trailing commas before } or ]
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    # 2. Fix missing quotes around keys (simple cases)
+    text = re.sub(r"([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:", r'\1"\2":', text)
+    # 3. Remove any control characters
+    text = re.sub(r"[\x00-\x1f\x7f]", "", text)
+
     return text.strip()
+
+
+def _repair_and_parse_json(text):
+    """Try to parse JSON, with multiple repair attempts."""
+    import json
+
+    # Attempt 1: Direct parse
+    try:
+        result = json.loads(text)
+        if isinstance(result, list):
+            return {"segments": result}
+        return result
+    except json.JSONDecodeError:
+        pass
+
+    # Attempt 2: Clean and parse
+    cleaned = _clean_json_reply(text)
+    try:
+        result = json.loads(cleaned)
+        if isinstance(result, list):
+            return {"segments": result}
+        return result
+    except json.JSONDecodeError as e:
+        pass
+
+    # Attempt 3: Fix missing colons in key-value pairs (e.g., "key" "value" -> "key": "value")
+    fixed = re.sub(r'"(\w+)"\s+"([^"]*)"', r'"\1": "\2"', text)
+    fixed = re.sub(r'"(\w+)"\s+(\d+)', r'"\1": \2', fixed)
+    fixed = re.sub(r'"(\w+)"\s+(\[)', r'"\1": \2', fixed)
+    fixed = re.sub(r'"(\w+)"\s+(\{)', r'"\1": \2', fixed)
+    try:
+        result = json.loads(fixed)
+        if isinstance(result, list):
+            return {"segments": result}
+        return result
+    except json.JSONDecodeError:
+        pass
+
+    # Attempt 4: Try to extract segments array from broken JSON
+    segments_match = re.search(r'"segments"\s*:\s*(\[.*?\])', text, re.DOTALL)
+    if segments_match:
+        try:
+            segments = json.loads(segments_match.group(1))
+            return {"segments": segments}
+        except json.JSONDecodeError:
+            pass
+
+    # Attempt 5: Try to find individual segment objects and build array
+    segment_pattern = re.compile(
+        r'\{\s*"start_time"\s*:\s*"([^"]+)"\s*,\s*"end_time"\s*:\s*"([^"]+)"\s*,\s*"title"\s*:\s*"([^"]*)"\s*,\s*"script_excerpt"\s*:\s*"([^"]*)"\s*\}',
+        re.DOTALL
+    )
+    segments = []
+    for match in segment_pattern.finditer(text):
+        segments.append({
+            "start_time": match.group(1),
+            "end_time": match.group(2),
+            "title": match.group(3),
+            "script_excerpt": match.group(4)
+        })
+    if segments:
+        return {"segments": segments}
+
+    # All attempts failed
+    raise json.JSONDecodeError("Could not repair JSON", text, 0)
 
 
 async def generate_clips():
@@ -876,7 +951,7 @@ async def generate_clips():
             continue
 
         try:
-            data = json.loads(_clean_json_reply(content))
+            data = _repair_and_parse_json(content)
 
             if isinstance(data, list):
                 data = {"segments": data}
@@ -902,12 +977,20 @@ async def generate_clips():
 
         accepted = []
 
+        rejected_count = 0
+        rejected_reasons = []
+
         for seg in raw:
             fixed = blocks.clamp_segment(
                 seg, block, minimum, maximum
             )
 
             if fixed is None:
+                rejected_count += 1
+                rejected_reasons.append(
+                    f"{seg.get('start_time','?')}–{seg.get('end_time','?')}: "
+                    f"'{seg.get('title','sem título')}'"
+                )
                 continue
 
             fixed["block"] = i
@@ -916,6 +999,8 @@ async def generate_clips():
         clips.extend(accepted)
 
         clip_blocks[i]["found"] = len(accepted)
+        clip_blocks[i]["rejected"] = rejected_count
+        clip_blocks[i]["rejected_reasons"] = rejected_reasons
         clip_blocks[i]["running"] = False
         clip_blocks[i]["done"] = True
 
@@ -1067,6 +1152,125 @@ async def render_all_clips():
 
     done = sum(1 for c in clips if c.get("rendered"))
     set_status(f"Rendered {done} of {len(clips)} clips.")
+
+
+async def generate_preview(index):
+    """
+    Generate a quick low-quality preview of a clip for review before full render.
+    Uses fast FFmpeg settings: low bitrate, small resolution, short duration.
+    """
+    if not (0 <= index < len(clips)):
+        return
+
+    clip = clips[index]
+    source = active_video()
+
+    if not source or not os.path.exists(source):
+        set_status("The video is no longer available.", error=True)
+        return
+
+    clip["previewing"] = True
+    clip["preview_error"] = ""
+    render_clip_list()
+
+    name = safe_filename(clip.get("title", ""), index + 1)
+    preview_path = os.path.join(PREVIEW_DIR, f"{name}_preview.mp4")
+
+    layout = layout_select.value
+    use_gpu = bool(ffmpeg_toggle.value)
+
+    clip_start = clip["start_time"]
+    clip_cam = get_region_at_time(clip_start, 'cam')
+    clip_content = get_region_at_time(clip_start, 'content')
+
+    multi_divisions = config.get("multi_divisions", [])
+    multi_orientation = config.get("multi_orientation", "horizontal")
+
+    def work():
+        # Calculate preview duration (max 10 seconds or clip duration, whichever is smaller)
+        from datetime import datetime
+        start_dt = datetime.strptime(clip["start_time"], "%H:%M:%S")
+        end_dt = datetime.strptime(clip["end_time"], "%H:%M:%S")
+        clip_duration = (end_dt - start_dt).total_seconds()
+        preview_duration = min(10, clip_duration)
+
+        if use_gpu:
+            shortmakergpu.cut_video_segment(
+                source,
+                preview_path,
+                clip["start_time"],
+                clip["end_time"],
+                layout=layout,
+                cam=clip_cam,
+                content=clip_content,
+                band_ratio=config["cam_band_ratio"],
+                cam_fit=config["cam_fit"],
+                content_fit=config["content_fit"],
+                divisions=multi_divisions,
+                orientation=multi_orientation,
+                # Preview-specific overrides
+                preview_mode=True,
+                preview_duration=preview_duration,
+            )
+        else:
+            shortmaker.cut_video_segment(
+                source,
+                preview_path,
+                clip["start_time"],
+                clip["end_time"],
+                layout,
+                cam_region=clip_cam,
+                content_region=clip_content,
+                band_ratio=config["cam_band_ratio"],
+                cam_fit=config["cam_fit"],
+                content_fit=config["content_fit"],
+                divisions=multi_divisions,
+                orientation=multi_orientation,
+                # Preview-specific overrides
+                preview_mode=True,
+                preview_duration=preview_duration,
+            )
+        return preview_path
+
+    try:
+        written = await run.io_bound(work)
+
+    except Exception as e:
+        clip["previewing"] = False
+        clip["preview_error"] = str(e)[:200]
+        render_clip_list()
+        set_status(f"Preview failed: {e}", error=True)
+        return
+
+    clip["previewing"] = False
+    clip["preview_path"] = os.path.basename(written)
+    render_clip_list()
+
+    # Auto-open preview modal
+    show_preview_modal(clip, index)
+    set_status(f"Preview ready: {os.path.basename(written)}")
+
+
+def show_preview_modal(clip, index):
+    """Show a modal dialog with the preview video player."""
+    preview_url = f"/previews/{clip['preview_path']}"
+    
+    with ui.dialog() as dialog, ui.card().classes("preview-modal"):
+        ui.label(f"Preview: {clip.get('title', 'Clip')}").classes("text-h6")
+        ui.label(f"{clip['start_time']} → {clip['end_time']}").classes("text-caption text-grey")
+        
+        # Video player
+        video = ui.video(preview_url).classes("w-full max-h-[70vh]")
+        
+        with ui.row().classes("w-full justify-end gap-2 mt-4"):
+            ui.button("Close", on_click=dialog.close).props("flat")
+            ui.button(
+                "Render Full Quality",
+                icon="movie",
+                on_click=lambda: (dialog.close(), render_clip(index))
+            ).props("color=primary")
+    
+    dialog.open()
 
 
 # ============================================================
@@ -1850,6 +2054,456 @@ async def pick_region(which):
     return result["confirmed"]
 
 
+async def pick_cam_content_regions():
+    """
+    Unified visual editor for both webcam and content regions.
+    Like multi-divisão editor but with just two regions (cam and content).
+    Features: click to select, drag to move, resize handles, alignment toolbar, aspect lock, timestamp navigation.
+    """
+    global cam_region, content_region, preview_timestamp
+
+    if not selected_video or not os.path.exists(selected_video):
+        set_status("Choose a video before selecting an area.", error=True)
+        return
+
+    try:
+        frame = await run.io_bound(extract_frame, selected_video, preview_timestamp)
+    except Exception as e:
+        set_status(f"Could not read frame: {e}", error=True)
+        return
+
+    img_w, img_h = frame.size
+
+    # Working copies of both regions
+    cam_draft = dict(cam_region)
+    content_draft = dict(content_region)
+    drafts = [cam_draft, content_draft]  # index 0 = cam, 1 = content
+    region_names = ["CAM", "CONTENT"]
+    region_colors = ["#6C63FF", "#FF8C3F"]  # purple, orange
+    selected_idx = {"value": 0}
+    drag = {"active": False, "mode": None, "start_x": 0, "start_y": 0, "orig": None, "handle": None}
+    aspect_lock = {"enabled": False, "ratio": None}  # (w, h) tuple or None for free
+
+    def clamp(idx):
+        d = drafts[idx]
+        d["w"] = max(10, min(d["w"], img_w))
+        d["h"] = max(10, min(d["h"], img_h))
+        d["x"] = max(0, min(d["x"], img_w - d["w"]))
+        d["y"] = max(0, min(d["y"], img_h - d["h"]))
+
+    def hit_test(px, py, d, handle_size=14):
+        """Return 'move', 'tl', 'tr', 'bl', 'br', or None"""
+        if not (d["x"] <= px <= d["x"] + d["w"] and d["y"] <= py <= d["y"] + d["h"]):
+            return None
+        # Check corner handles first
+        h = handle_size
+        if px <= d["x"] + h and py <= d["y"] + h:
+            return "tl"
+        if px >= d["x"] + d["w"] - h and py <= d["y"] + h:
+            return "tr"
+        if px <= d["x"] + h and py >= d["y"] + d["h"] - h:
+            return "bl"
+        if px >= d["x"] + d["w"] - h and py >= d["y"] + d["h"] - h:
+            return "br"
+        return "move"
+
+    def svg_content():
+        clamp(0)
+        clamp(1)
+        layers = []
+        for i, d in enumerate(drafts):
+            color = region_colors[i]
+            name = region_names[i]
+            is_selected = (i == selected_idx["value"])
+            stroke_w = 3 if is_selected else 2
+            stroke = color if is_selected else color + "80"
+            fill = f"rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.25)" if is_selected else f"rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.1)"
+            
+            x, y, w, h = d["x"], d["y"], d["w"], d["h"]
+            layers.append(
+                f'<rect x="{x}" y="{y}" width="{w}" height="{h}" '
+                f'fill="{fill}" stroke="{stroke}" stroke-width="{stroke_w}"/>'
+            )
+            layers.append(
+                f'<text x="{x + 5}" y="{y + 20}" fill="{color}" font-size="14" font-weight="bold">{name}</text>'
+            )
+            # Draw corner handles for selected region
+            if is_selected:
+                hs = 7
+                for hx, hy in [(x, y), (x+w, y), (x, y+h), (x+w, y+h)]:
+                    layers.append(
+                        f'<rect x="{hx-hs}" y="{hy-hs}" width="{2*hs}" height="{2*hs}" '
+                        f'fill="{color}" stroke="white" stroke-width="1"/>'
+                    )
+        return "\n".join(layers)
+
+    def redraw():
+        preview.content = svg_content()
+        update_aspect_label()
+
+    def on_pointer(e):
+        if e.type == "pointerdown" and e.button == 0:
+            mx, my = e.image_x, e.image_y
+            # Check which region was hit (check selected first, then others)
+            hit = None
+            hit_idx = None
+            hit_mode = None
+            for i in [selected_idx["value"], 1 - selected_idx["value"]]:
+                mode = hit_test(mx, my, drafts[i])
+                if mode:
+                    hit = mode
+                    hit_idx = i
+                    hit_mode = mode
+                    break
+            
+            if hit:
+                selected_idx["value"] = hit_idx
+                d = drafts[hit_idx]
+                drag["active"] = True
+                drag["mode"] = hit
+                drag["start_x"] = mx
+                drag["start_y"] = my
+                drag["orig"] = {"x": d["x"], "y": d["y"], "w": d["w"], "h": d["h"]}
+                # If aspect locked, compute ratio from original
+                if aspect_lock["enabled"]:
+                    aspect_lock["ratio"] = d["w"] / d["h"]
+                redraw()
+                region_select.value = "Cam" if hit_idx == 0 else "Content"
+            else:
+                # Click on empty space - start drawing new region for selected
+                d = drafts[selected_idx["value"]]
+                d["x"] = int(mx)
+                d["y"] = int(my)
+                d["w"] = 10
+                d["h"] = 10
+                drag["active"] = True
+                drag["mode"] = "br"  # resize from bottom-right
+                drag["start_x"] = mx
+                drag["start_y"] = my
+                drag["orig"] = {"x": d["x"], "y": d["y"], "w": d["w"], "h": d["h"]}
+                if aspect_lock["enabled"]:
+                    aspect_lock["ratio"] = d["w"] / d["h"]
+                redraw()
+
+        elif e.type == "pointermove" and drag["active"] and drag["mode"]:
+            idx = selected_idx["value"]
+            d = drafts[idx]
+            ox, oy = drag["orig"]["x"], drag["orig"]["y"]
+            ow, oh = drag["orig"]["w"], drag["orig"]["h"]
+            dx = e.image_x - drag["start_x"]
+            dy = e.image_y - drag["start_y"]
+            mode = drag["mode"]
+
+            if mode == "move":
+                d["x"] = int(ox + dx)
+                d["y"] = int(oy + dy)
+            elif mode == "tl":
+                if aspect_lock["enabled"] and aspect_lock["ratio"]:
+                    new_h = int(oh - dy)
+                    new_w = int(new_h * aspect_lock["ratio"])
+                    d["x"] = int(ox + ow - new_w)
+                    d["y"] = int(oy + oh - new_h)
+                    d["w"] = new_w
+                    d["h"] = new_h
+                else:
+                    d["x"] = int(ox + dx)
+                    d["y"] = int(oy + dy)
+                    d["w"] = int(ow - dx)
+                    d["h"] = int(oh - dy)
+            elif mode == "tr":
+                if aspect_lock["enabled"] and aspect_lock["ratio"]:
+                    new_h = int(oh - dy)
+                    new_w = int(new_h * aspect_lock["ratio"])
+                    d["y"] = int(oy + oh - new_h)
+                    d["w"] = new_w
+                    d["h"] = new_h
+                else:
+                    d["y"] = int(oy + dy)
+                    d["w"] = int(ow + dx)
+                    d["h"] = int(oh - dy)
+            elif mode == "bl":
+                if aspect_lock["enabled"] and aspect_lock["ratio"]:
+                    new_w = int(ow + dx)
+                    new_h = int(new_w / aspect_lock["ratio"])
+                    d["x"] = int(ox + ow - new_w)
+                    d["w"] = new_w
+                    d["h"] = new_h
+                else:
+                    d["x"] = int(ox + dx)
+                    d["w"] = int(ow - dx)
+                    d["h"] = int(oh + dy)
+            elif mode == "br":
+                if aspect_lock["enabled"] and aspect_lock["ratio"]:
+                    new_w = int(ow + dx)
+                    new_h = int(new_w / aspect_lock["ratio"])
+                    d["w"] = new_w
+                    d["h"] = new_h
+                else:
+                    d["w"] = int(ow + dx)
+                    d["h"] = int(oh + dy)
+            clamp(idx)
+            redraw()
+
+        elif e.type == "pointerup":
+            drag["active"] = False
+            drag["mode"] = None
+            drag["orig"] = None
+
+    def on_region_change(v):
+        selected_idx["value"] = 0 if v == "Cam" else 1
+        redraw()
+        update_aspect_label()
+
+    def align_region(where):
+        d = drafts[selected_idx["value"]]
+        if where == "left":
+            d["x"] = 0
+        elif where == "hcenter":
+            d["x"] = (img_w - d["w"]) // 2
+        elif where == "right":
+            d["x"] = img_w - d["w"]
+        elif where == "top":
+            d["y"] = 0
+        elif where == "vcenter":
+            d["y"] = (img_h - d["h"]) // 2
+        elif where == "bottom":
+            d["y"] = img_h - d["h"]
+        redraw()
+
+    def center_region():
+        d = drafts[selected_idx["value"]]
+        d["x"] = (img_w - d["w"]) // 2
+        d["y"] = (img_h - d["h"]) // 2
+        redraw()
+
+    def nudge_region(dx, dy):
+        d = drafts[selected_idx["value"]]
+        d["x"] += dx
+        d["y"] += dy
+        clamp(selected_idx["value"])
+        redraw()
+
+    def toggle_aspect_lock():
+        aspect_lock["enabled"] = not aspect_lock["enabled"]
+        if aspect_lock["enabled"]:
+            d = drafts[selected_idx["value"]]
+            aspect_lock["ratio"] = d["w"] / d["h"]
+            aspect_lock_btn.props("outline color=primary")
+        else:
+            aspect_lock["ratio"] = None
+            aspect_lock_btn.props("outline color=secondary")
+        aspect_lock_btn.update()
+        update_aspect_label()
+
+    def adjust_editor_time(delta_seconds):
+        global preview_timestamp
+        nonlocal frame
+        try:
+            current = parse_timecode(editor_time_input.value)
+        except:
+            current = preview_timestamp
+
+        new_time = max(0, current + delta_seconds)
+
+        if selected_video and os.path.exists(selected_video):
+            try:
+                duration = trim.probe_duration(selected_video)
+                new_time = min(new_time, duration)
+            except:
+                pass
+
+        preview_timestamp = new_time
+        editor_time_input.value = format_timecode(new_time)
+
+    async def refresh_editor_frame():
+        global preview_timestamp
+        nonlocal frame, img_w, img_h
+        try:
+            preview_timestamp = parse_timecode(editor_time_input.value)
+        except:
+            set_status("Formato inválido. Use HH:MM:SS", error=True)
+            return
+
+        try:
+            frame = await run.io_bound(extract_frame, selected_video, preview_timestamp)
+            img_w, img_h = frame.size
+            preview.source = frame
+            for d in drafts:
+                d["w"] = max(10, min(d["w"], img_w))
+                d["h"] = max(10, min(d["h"], img_h))
+                d["x"] = max(0, min(d["x"], img_w - d["w"]))
+                d["y"] = max(0, min(d["y"], img_h - d["h"]))
+            redraw()
+        except Exception as e:
+            set_status(f"Erro ao carregar frame: {e}", error=True)
+
+    def apply_and_close():
+        cam_region.clear()
+        cam_region.update(cam_draft)
+        content_region.clear()
+        content_region.update(content_draft)
+        save_config()
+        refresh_region_summaries()
+        update_preview()
+        dialog.close()
+
+    with ui.dialog() as dialog, ui.card().classes("region-editor-dialog"):
+        ui.label("Editor Visual: Cam / Content").classes("editor-title")
+
+        # Timestamp selector
+        with ui.row().classes("items-center gap-2 editor-timestamp-row"):
+            ui.label("Frame:").classes("toolbar-label")
+            editor_time_input = ui.input(
+                value=format_timecode(preview_timestamp),
+                placeholder="HH:MM:SS"
+            ).props("outlined dense").classes("w-24")
+            ui.button("-10s", on_click=lambda: adjust_editor_time(-10)).props("flat dense size=sm")
+            ui.button("-1s", on_click=lambda: adjust_editor_time(-1)).props("flat dense size=sm")
+            ui.button("+1s", on_click=lambda: adjust_editor_time(1)).props("flat dense size=sm")
+            ui.button("+10s", on_click=lambda: adjust_editor_time(10)).props("flat dense size=sm")
+            ui.button("Atualizar", icon="refresh", on_click=lambda: refresh_editor_frame()).props("outline dense size=sm color=primary")
+
+        ui.label(
+            f"Clique para selecionar região, arraste para mover, cantos para redimensionar. "
+            f"Resolução: {img_w} x {img_h} px."
+        ).classes("editor-hint")
+
+        preview = ui.interactive_image(
+            source=frame,
+            events=["pointerdown", "pointermove", "pointerup"],
+            on_mouse=on_pointer,
+            cross=False,
+        ).classes("region-preview")
+        preview.content = svg_content()
+
+        # Toolbar
+        with ui.row().classes("editor-toolbar"):
+            # Region selector
+            with ui.row().classes("items-center gap-2"):
+                ui.label("Região:").classes("toolbar-label")
+                region_select = ui.select(
+                    ["Cam", "Content"],
+                    value="Cam",
+                    on_change=on_region_change,
+                ).props("outlined dense").classes("w-24")
+
+            ui.space()
+
+            # Aspect lock
+            with ui.row().classes("items-center gap-1"):
+                aspect_lock_btn = ui.button(
+                    "🔓" if not aspect_lock["enabled"] else "🔒",
+                    on_click=toggle_aspect_lock,
+                ).props("outline dense size=sm color=secondary").tooltip("Travar proporção da região selecionada")
+
+            ui.space()
+
+            # Aspect Ratio Presets
+            with ui.row().classes("items-center gap-1"):
+                ui.label("Proporção:").classes("toolbar-label")
+                # Current aspect ratio display
+                aspect_label = ui.label("").classes("aspect-ratio-label")
+                def update_aspect_label():
+                    d = drafts[selected_idx["value"]]
+                    if d["h"] > 0:
+                        ratio = d["w"] / d["h"]
+                        # Find closest common ratio
+                        common_ratios = {
+                            (1, 1): "1:1",
+                            (16, 9): "16:9",
+                            (9, 16): "9:16",
+                            (4, 3): "4:3",
+                            (3, 4): "3:4",
+                            (21, 9): "21:9",
+                        }
+                        best = min(common_ratios.items(), key=lambda x: abs(x[0][0]/x[0][1] - ratio))
+                        aspect_label.set_text(f"{common_ratios[best[0]]} ({ratio:.2f})")
+                    else:
+                        aspect_label.set_text("")
+                # Free (no lock)
+                def set_aspect(w, h):
+                    aspect_lock["enabled"] = True
+                    aspect_lock["ratio"] = (w, h)
+                    # Apply to current region immediately
+                    idx = selected_idx["value"]
+                    d = drafts[idx]
+                    # Adjust height to match ratio based on current width
+                    d["h"] = max(10, int(d["w"] / (w / h)))
+                    clamp(idx)
+                    redraw()
+                    update_aspect_label()
+                def clear_aspect():
+                    aspect_lock["enabled"] = False
+                    aspect_lock["ratio"] = None
+                    update_aspect_label()
+                
+                ui.button("Livre", on_click=clear_aspect
+                         ).props("flat dense size=sm outline").tooltip("Sem proporção fixa")
+                for w, h, label in (
+                    (1, 1, "1:1"),
+                    (16, 9, "16:9"),
+                    (9, 16, "9:16"),
+                    (4, 3, "4:3"),
+                    (3, 4, "3:4"),
+                    (21, 9, "21:9"),
+                ):
+                    ui.button(label, on_click=lambda w=w, h=h: set_aspect(w, h)
+                             ).props("flat dense size=sm outline").tooltip(f"Proporção {label}")
+
+            ui.space()
+
+            # Alignment
+            with ui.row().classes("items-center gap-1"):
+                ui.label("Alinhar:").classes("toolbar-label")
+                for icon, where, tip in (
+                    ("align_horizontal_left", "left", "Left"),
+                    ("align_horizontal_center", "hcenter", "Center"),
+                    ("align_horizontal_right", "right", "Right"),
+                    ("align_vertical_top", "top", "Top"),
+                    ("align_vertical_center", "vcenter", "Middle"),
+                    ("align_vertical_bottom", "bottom", "Bottom"),
+                ):
+                    ui.button(
+                        icon=icon,
+                        on_click=lambda w=where: align_region(w),
+                    ).props("flat dense round size=sm").tooltip(tip)
+
+                ui.button(
+                    "Centralizar",
+                    icon="center_focus_strong",
+                    on_click=center_region,
+                ).props("flat dense size=sm").tooltip("Centralizar região")
+
+            ui.space()
+
+            # Nudge
+            with ui.row().classes("items-center gap-1"):
+                ui.label("Mover:").classes("toolbar-label")
+                for icon, dx, dy, tip in (
+                    ("keyboard_arrow_left", -10, 0, "Left 10px"),
+                    ("keyboard_arrow_right", 10, 0, "Right 10px"),
+                    ("keyboard_arrow_up", 0, -10, "Up 10px"),
+                    ("keyboard_arrow_down", 0, 10, "Down 10px"),
+                ):
+                    ui.button(
+                        icon=icon,
+                        on_click=lambda a=dx, b=dy: nudge_region(a, b),
+                    ).props("flat dense round size=sm").tooltip(tip)
+                ui.label("10 px").classes("inline-help")
+
+        with ui.row().classes("confirm-buttons"):
+            ui.button("Cancelar", on_click=dialog.close).props("flat")
+            ui.button(
+                "Salvar Regiões",
+                icon="save",
+                on_click=apply_and_close,
+            ).props("unelevated color=primary")
+
+    dialog.open()
+    while dialog.value:
+        await asyncio.sleep(0.05)
+
+
 # ============================================================
 # COLORS
 # ============================================================
@@ -2360,9 +3014,6 @@ with ui.column().classes("app"):
                 [
                     "Do Not Crop (Keep Original Aspect Ratio)",
                     "Center Crop (9:16 Full Screen)",
-                    "Fit with Black Background (Letterbox)",
-                    "Fit with White Background (Letterbox)",
-                    "Fit with Blurred Background",
                     "Shorts with Cam (9:16)",
                     "Multi-Divisão 9:16",
                 ],
@@ -2377,71 +3028,70 @@ with ui.column().classes("app"):
                 "Layout is applied by the FFmpeg / GPU renderer."
             ).classes("inline-help layout-ok")
 
-        # --- regions ---------------------------------------
+        # --- Cam/Content regions container (only for Shorts with Cam) ---
+        cam_content_container = ui.column().classes("cam-content-container")
+        cam_content_container.visible = (layout_select.value == "Shorts with Cam (9:16)")
 
-        with ui.row().classes("form-row"):
+        def update_cam_content_visibility():
+            cam_content_container.visible = (layout_select.value == "Shorts with Cam (9:16)")
+            cam_content_container.update()
 
-            ui.label("Webcam").classes("form-label")
+        layout_select.on_value_change(update_cam_content_visibility)
 
-            ui.button(
-                "Select Webcam Area...",
-                icon="crop_free",
-                on_click=lambda: pick_region("cam"),
-            ).props("outline")
+        with cam_content_container:
+            # --- regions ---------------------------------------
 
-            cam_summary = ui.label("").classes("selected-name")
+            with ui.row().classes("form-row"):
 
-        with ui.row().classes("form-row"):
+                ui.label("Regiões Cam / Content").classes("form-label")
 
-            ui.label("Content").classes("form-label")
+                ui.button(
+                    "Editar regiões visualmente",
+                    icon="crop_free",
+                    on_click=lambda: pick_cam_content_regions(),
+                ).props("outline color=primary")
 
-            ui.button(
-                "Select Content Area...",
-                icon="crop_free",
-                on_click=lambda: pick_region("content"),
-            ).props("outline")
+                regions_summary = ui.label("").classes("selected-name")
 
-            content_summary = ui.label("").classes("selected-name")
+            with ui.row().classes("form-row"):
 
-        with ui.row().classes("form-row"):
+                ui.label("Cam height").classes("form-label")
 
-            ui.label("Cam height").classes("form-label")
+                band_slider = ui.slider(
+                    min=10,
+                    max=70,
+                    step=1,
+                    value=int(config["cam_band_ratio"] * 100),
+                    on_change=lambda: on_band_change(),
+                ).props("label-always").classes("band-slider")
 
-            band_slider = ui.slider(
-                min=10,
-                max=70,
-                step=1,
-                value=int(config["cam_band_ratio"] * 100),
-                on_change=lambda: on_band_change(),
-            ).props("label-always").classes("band-slider")
+            with ui.row().classes("form-row"):
 
-        with ui.row().classes("form-row"):
+                ui.label("Cam fit").classes("form-label")
 
-            ui.label("Cam fit").classes("form-label")
+                cam_fit_select = ui.select(
+                    ["Fill (may crop)", "Fit (may add bars)"],
+                    value=(
+                        "Fit (may add bars)"
+                        if config["cam_fit"] == "fit"
+                        else "Fill (may crop)"
+                    ),
+                    on_change=lambda: on_fit_change(),
+                ).props("outlined dense").classes("layout-input")
 
-            cam_fit_select = ui.select(
-                ["Fill (may crop)", "Fit (may add bars)"],
-                value=(
-                    "Fit (may add bars)"
-                    if config["cam_fit"] == "fit"
-                    else "Fill (may crop)"
-                ),
-                on_change=lambda: on_fit_change(),
-            ).props("outlined dense").classes("layout-input")
+            with ui.row().classes("form-row"):
 
-        with ui.row().classes("form-row"):
+                ui.label("Content fit").classes("form-label")
 
-            ui.label("Content fit").classes("form-label")
-
-            content_fit_select = ui.select(
-                ["Fill (may crop)", "Fit (may add bars)"],
-                value=(
-                    "Fit (may add bars)"
-                    if config["content_fit"] == "fit"
-                    else "Fill (may crop)"
-                ),
-                on_change=lambda: on_fit_change(),
-            ).props("outlined dense").classes("layout-input")
+                content_fit_select = ui.select(
+                    ["Fill (may crop)", "Fit (may add bars)"],
+                    value=(
+                        "Fit (may add bars)"
+                        if config["content_fit"] == "fit"
+                        else "Fill (may crop)"
+                    ),
+                    on_change=lambda: on_fit_change(),
+                ).props("outlined dense").classes("layout-input")
 
         # --- Multi-Divisão UI ---
         multi_div_container = ui.column().classes("multi-div-container")
@@ -2552,12 +3202,25 @@ with ui.column().classes("app"):
             update_preview()
 
         def add_division():
-            """Add a new division with default settings (full frame)."""
+            """Add a new division centered in the video with 9:16 aspect ratio."""
             if "multi_divisions" not in config:
                 config["multi_divisions"] = []
             
+            # Create a centered 9:16 region (matching output aspect) at 80% of source height
+            src_w = DEFAULT_CONTENT["w"]
+            src_h = DEFAULT_CONTENT["h"]
+            aspect_9_16 = 9.0 / 16.0
+            
+            # Use 80% of source height for the region
+            region_h = int(src_h * 0.8)
+            region_w = int(region_h * aspect_9_16)
+            
+            # Center it
+            region_x = (src_w - region_w) // 2
+            region_y = (src_h - region_h) // 2
+            
             new_div = {
-                "region": dict(DEFAULT_CONTENT),
+                "region": {"x": region_x, "y": region_y, "w": region_w, "h": region_h},
                 "fit": "fill",
                 "zoom": 1.0,
                 "pos_x": 0.5,
@@ -3034,118 +3697,6 @@ with ui.column().classes("app"):
                 except Exception as e:
                     set_status(f"Erro ao carregar frame: {e}", error=True)
             
-            def detect_faces_in_frame(pil_frame):
-                """Detect faces in a PIL frame using OpenCV Haar cascade.
-                Returns list of (x, y, w, h) face rectangles in image coordinates."""
-                try:
-                    # Convert PIL to OpenCV format
-                    cv_image = cv2.cvtColor(np.array(pil_frame), cv2.COLOR_RGB2BGR)
-                    gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
-                    
-                    # Load Haar cascade for face detection (local file)
-                    cascade_path = os.path.join(os.path.dirname(__file__), 'haarcascade_frontalface_default.xml')
-                    face_cascade = cv2.CascadeClassifier(cascade_path)
-                    
-                    if face_cascade.empty():
-                        set_status("Erro: Cascade classifier não carregado", error=True)
-                        return []
-                    
-                    # Detect faces
-                    faces = face_cascade.detectMultiScale(
-                        gray,
-                        scaleFactor=1.1,
-                        minNeighbors=5,
-                        minSize=(30, 30),
-                        flags=cv2.CASCADE_SCALE_IMAGE
-                    )
-                    
-                    # Convert to list of (x, y, w, h)
-                    return [(int(x), int(y), int(w), int(h)) for (x, y, w, h) in faces]
-                except Exception as e:
-                    set_status(f"Erro na detecção: {e}", error=True)
-                    return []
-            
-            def auto_fit_faces():
-                """Detect faces and create/adjust divisions to fit each face."""
-                nonlocal drafts
-                
-                faces = detect_faces_in_frame(frame)
-                if not faces:
-                    set_status("Nenhum rosto detectado neste frame", error=True)
-                    return
-                
-                # Sort faces by x position (left to right)
-                faces.sort(key=lambda f: f[0])
-                
-                # Limit to number of divisions or create new ones
-                num_faces = min(len(faces), len(drafts) if drafts else len(faces))
-                
-                # If no drafts, create them
-                if not drafts:
-                    drafts = []
-                
-                # Ensure we have enough drafts
-                while len(drafts) < num_faces:
-                    drafts.append({"x": 0, "y": 0, "w": 100, "h": 100})
-                
-                # Fit each division to a face with some padding
-                padding = 20  # pixels
-                for i in range(num_faces):
-                    fx, fy, fw, fh = faces[i]
-                    
-                    # Add padding around face
-                    x = max(0, fx - padding)
-                    y = max(0, fy - padding)
-                    w = min(img_w - x, fw + 2 * padding)
-                    h = min(img_h - y, fh + 2 * padding)
-                    
-                    # Ensure even dimensions (required for video encoding)
-                    w = w - (w % 2)
-                    h = h - (h % 2)
-                    
-                    drafts[i]["x"] = x
-                    drafts[i]["y"] = y
-                    drafts[i]["w"] = max(10, w)
-                    drafts[i]["h"] = max(10, h)
-                
-                # Remove excess drafts if more drafts than faces
-                if len(drafts) > num_faces:
-                    drafts = drafts[:num_faces]
-                    selected_idx["value"] = min(selected_idx["value"], num_faces - 1)
-                
-                redraw()
-                update_select()
-                set_status(f"Detectados {len(faces)} rosto(s). {num_faces} divisão(ões) ajustada(s).")
-            
-            def center_on_faces():
-                """Center existing divisions on detected faces without resizing."""
-                nonlocal drafts
-                
-                if not drafts:
-                    set_status("Nenhuma divisão para centralizar", error=True)
-                    return
-                
-                faces = detect_faces_in_frame(frame)
-                if not faces:
-                    set_status("Nenhum rosto detectado neste frame", error=True)
-                    return
-                
-                # Sort faces by x position
-                faces.sort(key=lambda f: f[0])
-                
-                # Assign each division to a face (round-robin if more divisions than faces)
-                for i, d in enumerate(drafts):
-                    face_idx = i % len(faces)
-                    fx, fy, fw, fh = faces[face_idx]
-                    
-                    # Center division on face
-                    d["x"] = max(0, min(fx + fw // 2 - d["w"] // 2, img_w - d["w"]))
-                    d["y"] = max(0, min(fy + fh // 2 - d["h"] // 2, img_h - d["h"]))
-                
-                redraw()
-                update_select()
-                set_status(f"Divisões centralizadas em {len(faces)} rosto(s) detectado(s).")
-            
             def apply_and_close():
                 # Save drafts back to config
                 for i, d in enumerate(drafts):
@@ -3295,18 +3846,6 @@ with ui.column().classes("app"):
                     
                     ui.separator().props("vertical")
                     
-                    # AI Face Detection
-                    with ui.row().classes("items-center gap-1"):
-                        ui.label("IA:").classes("toolbar-label")
-                        ui.button("Detectar Rostos", icon="face",
-                                  on_click=lambda: auto_fit_faces()
-                                 ).props("outline dense size=sm color=primary").tooltip("Detecta rostos no frame e ajusta divisões")
-                        ui.button("Centralizar em Rostos", icon="center_focus_strong",
-                                  on_click=lambda: center_on_faces()
-                                 ).props("flat dense size=sm").tooltip("Centraliza divisões existentes nos rostos detectados")
-                    
-                    ui.separator().props("vertical")
-                    
                     # Actions
                     ui.button("Distribuir Igualmente", icon="grid_on",
                               on_click=distribute_all).props("outline dense size=sm")
@@ -3358,13 +3897,9 @@ with ui.column().classes("app"):
         update_preview()
 
     def refresh_region_summaries():
-        cam_summary.text = (
-            f"{cam_region['w']}x{cam_region['h']} "
-            f"at ({cam_region['x']}, {cam_region['y']})"
-        )
-        content_summary.text = (
-            f"{content_region['w']}x{content_region['h']} "
-            f"at ({content_region['x']}, {content_region['y']})"
+        regions_summary.text = (
+            f"Cam: {cam_region['w']}x{cam_region['h']} @ ({cam_region['x']}, {cam_region['y']})  |  "
+            f"Content: {content_region['w']}x{content_region['h']} @ ({content_region['x']}, {content_region['y']})"
         )
 
     def on_fit_change():
@@ -3932,6 +4467,89 @@ with ui.column().classes("app"):
 
             ui.label("min").classes("small-label")
 
+        # Smart/auto configuration helper
+        with ui.row().classes("form-row"):
+            ui.label("Configuração inteligente").classes("form-label")
+            smart_mode = ui.switch("Auto", value=False).tooltip(
+                "Calcula automaticamente bloco e clips baseado na duração do vídeo"
+            )
+            ui.space()
+            # Preview label showing calculated blocks/clips
+            clips_preview = ui.label("").classes("inline-help clips-preview")
+
+        def update_clips_preview():
+            """Update the preview showing estimated blocks and total clips."""
+            video = active_video()
+            if not video or not os.path.exists(video):
+                clips_preview.set_text("Selecione um vídeo para ver a estimativa")
+                return
+            try:
+                duration = trim.probe_duration(video)
+            except Exception:
+                clips_preview.set_text("Não foi possível ler a duração do vídeo")
+                return
+            
+            block_secs = int(clip_block_minutes.value) * 60
+            num_blocks = max(1, int(math.ceil(duration / block_secs)))
+            avg_clips = (int(clips_min.value) + int(clips_max.value)) / 2
+            est_total = int(num_blocks * avg_clips)
+            
+            h = int(duration // 3600)
+            m = int((duration % 3600) // 60)
+            s = int(duration % 60)
+            dur_str = f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+            
+            clips_preview.set_text(
+                f"⏱ Vídeo: {dur_str}  |  📦 Blocos: {num_blocks} (a cada {clip_block_minutes.value}min)  |  🎬 Clips estimados: ~{est_total} ({clips_min.value}–{clips_max.value} por bloco)"
+            )
+
+        def on_smart_toggle():
+            if smart_mode.value:
+                video = active_video()
+                if not video or not os.path.exists(video):
+                    smart_mode.set_value(False)
+                    set_status("Selecione um vídeo primeiro para usar o modo automático", error=True)
+                    return
+                try:
+                    duration = trim.probe_duration(video)
+                except Exception:
+                    smart_mode.set_value(False)
+                    set_status("Não foi possível ler a duração do vídeo", error=True)
+                    return
+                
+                # Smart presets based on video duration
+                if duration <= 600:  # <= 10 min
+                    clip_block_minutes.set_value(5)
+                    clips_min.set_value(1)
+                    clips_max.set_value(3)
+                elif duration <= 1800:  # <= 30 min
+                    clip_block_minutes.set_value(10)
+                    clips_min.set_value(2)
+                    clips_max.set_value(4)
+                elif duration <= 3600:  # <= 1 hour
+                    clip_block_minutes.set_value(15)
+                    clips_min.set_value(2)
+                    clips_max.set_value(5)
+                elif duration <= 7200:  # <= 2 hours
+                    clip_block_minutes.set_value(20)
+                    clips_min.set_value(3)
+                    clips_max.set_value(6)
+                else:  # > 2 hours
+                    clip_block_minutes.set_value(30)
+                    clips_min.set_value(4)
+                    clips_max.set_value(8)
+                
+                set_status("Configuração automática aplicada baseada na duração do vídeo")
+            update_clips_preview()
+
+        smart_mode.on_value_change(on_smart_toggle)
+        clips_min.on_value_change(update_clips_preview)
+        clips_max.on_value_change(update_clips_preview)
+        clip_block_minutes.on_value_change(update_clips_preview)
+
+        # Initial preview
+        update_clips_preview()
+
         with ui.row().classes("form-row"):
 
             ui.label("").classes("form-label")
@@ -4011,6 +4629,19 @@ with ui.column().classes("app"):
 
                 if b.get("error"):
                     chip.tooltip(b["error"])
+                    # Also show error inline below the chip
+                    ui.label(f"⚠ {b['error']}").classes("block-error-detail")
+
+                # Show rejected count if any
+                rejected = b.get("rejected", 0)
+                if rejected and b.get("done"):
+                    ui.label(
+                        f"↳ {rejected} clip{'s' if rejected > 1 else ''} rejeitado{'s' if rejected > 1 else ''}"
+                    ).classes("block-rejected-detail")
+                    # Show rejection reasons
+                    reasons = b.get("rejected_reasons", [])
+                    for reason in reasons:
+                        ui.label(f"   • {reason}").classes("block-rejected-reason")
 
     def render_clip_list():
         """Draw the clips found so far, each with its own render button."""
@@ -4049,12 +4680,48 @@ with ui.column().classes("app"):
                     elif c.get("rendering"):
                         ui.label("rendering...").classes("inline-help")
 
+                    elif c.get("previewing"):
+                        ui.label("generating preview...").classes("inline-help")
+
+                    elif c.get("preview_error"):
+                        ui.label(f"Preview failed: {c['preview_error']}").classes("clip-error")
+                        with ui.row().classes("gap-1"):
+                            ui.button(
+                                "Retry Preview",
+                                icon="refresh",
+                                on_click=lambda idx=i: generate_preview(idx),
+                            ).props("outline dense color=secondary")
+                            ui.button(
+                                "Render",
+                                icon="movie",
+                                on_click=lambda idx=i: render_clip(idx),
+                            ).props("outline dense")
+
+                    elif c.get("preview_path"):
+                        with ui.row().classes("gap-1"):
+                            ui.button(
+                                "View Preview",
+                                icon="visibility",
+                                on_click=lambda idx=i: show_preview_modal(clips[idx], idx),
+                            ).props("outline dense color=secondary")
+                            ui.button(
+                                "Render",
+                                icon="movie",
+                                on_click=lambda idx=i: render_clip(idx),
+                            ).props("outline dense")
+
                     else:
-                        ui.button(
-                            "Render",
-                            icon="movie",
-                            on_click=lambda idx=i: render_clip(idx),
-                        ).props("outline dense")
+                        with ui.row().classes("gap-1"):
+                            ui.button(
+                                "Preview",
+                                icon="visibility",
+                                on_click=lambda idx=i: generate_preview(idx),
+                            ).props("outline dense color=secondary")
+                            ui.button(
+                                "Render",
+                                icon="movie",
+                                on_click=lambda idx=i: render_clip(idx),
+                            ).props("outline dense")
 
     def clear_clips():
         global clips, clip_blocks
@@ -4120,6 +4787,13 @@ toggle_ffmpeg()
 
 
 # ============================================================
+# Preview directory for quick previews
+PREVIEW_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "previews")
+os.makedirs(PREVIEW_DIR, exist_ok=True)
+
+# Serve previews as static files
+app.add_static_files("/previews", PREVIEW_DIR)
+
 # RUN
 # ============================================================
 
