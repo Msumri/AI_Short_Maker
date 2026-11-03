@@ -2693,10 +2693,9 @@ with ui.column().classes("app"):
                 save_config()
                 update_preview()
 
-        def pick_division_region(index):
+        async def pick_division_region(index):
             """Open the visual editor for all divisions (ignores index)."""
-            # NiceGUI automatically awaits async functions called from event handlers
-            pick_multi_division_regions()
+            await pick_multi_division_regions()
 
         async def pick_multi_division_regions():
             """Open visual editor for all multi-divisão regions at once."""
