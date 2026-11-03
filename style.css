@@ -1021,3 +1021,147 @@ body {
     font-size: 11px;
     margin: 0;
 }
+
+/* ============================================================
+   MULTI-DIVISÃO 9:16
+   ============================================================ */
+
+.multi-div-container {
+    width: 100%;
+}
+
+.divisions-list {
+    width: 100%;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.divisions-items {
+    width: 100%;
+    gap: 8px;
+}
+
+.division-card {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px 14px;
+    margin-bottom: 4px;
+}
+
+.division-header {
+    width: 100%;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+}
+
+.division-icon {
+    color: var(--orange);
+    font-size: 20px;
+}
+
+.division-title {
+    font-family: var(--serif);
+    font-size: 18px;
+    line-height: 1.2;
+    color: var(--text);
+    flex: 1;
+}
+
+.division-hint-card {
+    width: 100%;
+    background: var(--surface-2);
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+    padding: 24px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+
+.division-hint-card .text-h6 {
+    font-family: var(--serif);
+    font-size: 18px;
+    color: var(--text);
+}
+
+.division-hint-card .text-body2 {
+    font-size: 13px;
+    color: var(--dim);
+    max-width: 400px;
+}
+
+.division-actions {
+    justify-content: flex-end;
+    gap: 8px;
+    padding-top: 6px;
+    margin-top: 4px;
+    border-top: 1px solid var(--line);
+}
+
+/* Template buttons row */
+.template-buttons {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-left: 96px; /* align with form-label width */
+}
+
+/* Override for division number inputs */
+.division-card .q-field__control {
+    background: var(--surface-2) !important;
+}
+
+.division-card .q-field__control:before {
+    border-color: var(--line) !important;
+}
+
+.division-card .q-field__control:hover:before {
+    border-color: var(--orange) !important;
+}
+
+.division-card .q-field--focused .q-field__control:after {
+    border-color: var(--orange) !important;
+}
+
+.division-card .q-field__label {
+    color: var(--dim) !important;
+    font-family: var(--mono) !important;
+    font-size: 10px !important;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.division-card .q-field__native,
+.division-card .q-field__input {
+    color: var(--text) !important;
+    font-family: var(--mono) !important;
+    font-size: 13px !important;
+}
+
+/* Slider styling in division cards */
+.division-card .q-slider__track-container {
+    color: var(--line) !important;
+}
+
+.division-card .q-slider__selection,
+.division-card .q-slider__thumb {
+    color: var(--orange) !important;
+}
+
+.division-card .q-slider__pin-text {
+    background: var(--orange) !important;
+    color: var(--orange-ink) !important;
+    font-family: var(--mono);
+}
+
+/* Select styling in division cards */
+.division-card .q-select .q-field__control {
+    background: var(--surface-2) !important;
+}

@@ -2472,7 +2472,7 @@ with ui.column().classes("app"):
             # Template buttons - quick starters
             with ui.row().classes("form-row"):
                 ui.label("Iniciar com").classes("form-label")
-                with ui.row().classes("gap-2"):
+                with ui.row().classes("template-buttons gap-2"):
                     ui.button("2 Divisões", icon="format_list_numbered",
                               on_click=lambda: apply_template(2)).props("outline dense size=sm")
                     ui.button("3 Divisões", icon="format_list_numbered",
@@ -2585,16 +2585,16 @@ with ui.column().classes("app"):
             if len(config["multi_divisions"]) == 0:
                 with divisions_container:
                     with ui.card().classes("division-hint-card"):
-                        ui.icon("info", size="2rem").classes("text-grey-5")
+                        ui.icon("info", size="2rem").classes("text-dim")
                         ui.label("Nenhuma divisão configurada").classes("text-h6 q-mt-sm")
-                        ui.label("Use os botões acima para começar com um template ou adicione divisões manualmente.").classes("text-body2 text-grey-7 q-mt-xs")
+                        ui.label("Use os botões acima para começar com um template ou adicione divisões manualmente.").classes("text-body2 text-dim q-mt-xs")
             
             for i, div in enumerate(config["multi_divisions"]):
                 with divisions_container:
                     with ui.card().classes("division-card"):
                         # Header with title and delete button
                         with ui.row().classes("division-header items-center"):
-                            ui.icon("crop_landscape").classes("text-primary")
+                            ui.icon("crop_landscape").classes("division-icon")
                             ui.label(f"Divisão {i + 1}").classes("division-title")
                             ui.space()
                             ui.button(
