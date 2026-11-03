@@ -2452,8 +2452,8 @@ with ui.column().classes("app"):
         layout_select.on_value_change(update_multi_div_visibility)
 
         with multi_div_container:
-            ui.label("Multi-Divisão 9:16").classes("form-label section-title")
-            
+            ui.label("Multi-Divisão 9:16").classes("section-title")
+
             # Orientation selector
             with ui.row().classes("form-row"):
                 ui.label("Orientação").classes("form-label")
@@ -2469,25 +2469,22 @@ with ui.column().classes("app"):
                     on_change=lambda: on_orientation_change(),
                 ).props("outlined dense").classes("layout-input")
 
+            # Template buttons - quick starters
+            with ui.row().classes("form-row"):
+                ui.label("Iniciar com").classes("form-label")
+                with ui.row().classes("gap-2"):
+                    ui.button("2 Divisões", icon="format_list_numbered",
+                              on_click=lambda: apply_template(2)).props("outline dense size=sm")
+                    ui.button("3 Divisões", icon="format_list_numbered",
+                              on_click=lambda: apply_template(3)).props("outline dense size=sm")
+                    ui.button("4 Divisões", icon="format_list_numbered",
+                              on_click=lambda: apply_template(4)).props("outline dense size=sm")
+                    ui.button("Limpar Tudo", icon="clear_all",
+                              on_click=lambda: clear_all_divisions()).props("flat dense size=sm color=negative")
+
             # Divisions list
             with ui.column().classes("divisions-list"):
                 divisions_container = ui.column().classes("divisions-items")
-
-            # Add division button
-            with ui.row().classes("form-row"):
-                ui.button(
-                    "Adicionar Divisão",
-                    icon="add",
-                    on_click=lambda: add_division(),
-                ).props("outline color=primary")
-
-            # Reset to equal distribution
-            with ui.row().classes("form-row"):
-                ui.button(
-                    "Redistribuir Igualmente",
-                    icon="grid_on",
-                    on_click=lambda: redistribute_divisions(),
-                ).props("outline")
 
         def on_orientation_change():
             val = orientation_select.value
@@ -2501,12 +2498,62 @@ with ui.column().classes("app"):
             update_divisions_ui()
             update_preview()
 
+        def apply_template(num_divisions):
+            """Apply a template with N equally-sized divisions covering the full video."""
+            config["multi_divisions"] = []
+            orientation = config.get("multi_orientation", "horizontal")
+            
+            for i in range(num_divisions):
+                # Calculate region based on orientation
+                if orientation == "horizontal":
+                    # Stack vertically - each division gets full width, equal height
+                    h = DEFAULT_CONTENT["h"] // num_divisions
+                    y = i * h
+                    region = {"x": 0, "y": y, "w": DEFAULT_CONTENT["w"], "h": h}
+                elif orientation == "vertical":
+                    # Side by side - each division gets full height, equal width
+                    w = DEFAULT_CONTENT["w"] // num_divisions
+                    x = i * w
+                    region = {"x": x, "y": 0, "w": w, "h": DEFAULT_CONTENT["h"]}
+                else:  # grid
+                    # Calculate grid
+                    cols = int(num_divisions ** 0.5)
+                    if cols * cols < num_divisions:
+                        cols += 1
+                    rows = (num_divisions + cols - 1) // cols
+                    w = DEFAULT_CONTENT["w"] // cols
+                    h = DEFAULT_CONTENT["h"] // rows
+                    row = i // cols
+                    col = i % cols
+                    x = col * w
+                    y = row * h
+                    region = {"x": x, "y": y, "w": w, "h": h}
+                
+                new_div = {
+                    "region": region,
+                    "fit": "fill",
+                    "zoom": 1.0,
+                    "pos_x": 0.5,
+                    "pos_y": 0.5,
+                }
+                config["multi_divisions"].append(new_div)
+            
+            save_config()
+            update_divisions_ui()
+            update_preview()
+
+        def clear_all_divisions():
+            """Remove all divisions."""
+            config["multi_divisions"] = []
+            save_config()
+            update_divisions_ui()
+            update_preview()
+
         def add_division():
-            """Add a new division with default settings."""
+            """Add a new division with default settings (full frame)."""
             if "multi_divisions" not in config:
                 config["multi_divisions"] = []
             
-            # Default region is the full content area
             new_div = {
                 "region": dict(DEFAULT_CONTENT),
                 "fit": "fill",
@@ -2527,11 +2574,6 @@ with ui.column().classes("app"):
                 update_divisions_ui()
                 update_preview()
 
-        def redistribute_divisions():
-            """Just trigger UI update - divisions are always equally distributed."""
-            update_divisions_ui()
-            update_preview()
-
         def update_divisions_ui():
             """Rebuild the divisions UI."""
             divisions_container.clear()
@@ -2539,10 +2581,20 @@ with ui.column().classes("app"):
             if "multi_divisions" not in config:
                 config["multi_divisions"] = []
             
+            # Show hint when no divisions
+            if len(config["multi_divisions"]) == 0:
+                with divisions_container:
+                    with ui.card().classes("division-hint-card"):
+                        ui.icon("info", size="2rem").classes("text-grey-5")
+                        ui.label("Nenhuma divisão configurada").classes("text-h6 q-mt-sm")
+                        ui.label("Use os botões acima para começar com um template ou adicione divisões manualmente.").classes("text-body2 text-grey-7 q-mt-xs")
+            
             for i, div in enumerate(config["multi_divisions"]):
                 with divisions_container:
                     with ui.card().classes("division-card"):
-                        with ui.row().classes("division-header"):
+                        # Header with title and delete button
+                        with ui.row().classes("division-header items-center"):
+                            ui.icon("crop_landscape").classes("text-primary")
                             ui.label(f"Divisão {i + 1}").classes("division-title")
                             ui.space()
                             ui.button(
@@ -2550,76 +2602,96 @@ with ui.column().classes("app"):
                                 on_click=lambda idx=i: remove_division(idx),
                             ).props("flat dense size=sm color=negative").tooltip("Remover divisão")
                         
+                        # Region inputs - compact grid
                         with ui.row().classes("form-row"):
-                            ui.label("Região (x, y, w, h)").classes("form-label")
-                            with ui.row().classes("gap-1"):
+                            ui.label("Região de origem").classes("form-label")
+                            with ui.row().classes("gap-2 w-full"):
                                 ui.number(
                                     label="X",
                                     value=div.get("region", {}).get("x", DEFAULT_CONTENT["x"]),
                                     on_change=lambda v, idx=i: set_div_region(idx, "x", v),
-                                ).props("dense").classes("small-input")
+                                    min=0, max=9999,
+                                ).props("outlined dense").classes("flex-grow")
                                 ui.number(
                                     label="Y",
                                     value=div.get("region", {}).get("y", DEFAULT_CONTENT["y"]),
                                     on_change=lambda v, idx=i: set_div_region(idx, "y", v),
-                                ).props("dense").classes("small-input")
+                                    min=0, max=9999,
+                                ).props("outlined dense").classes("flex-grow")
                                 ui.number(
                                     label="Largura",
                                     value=div.get("region", {}).get("w", DEFAULT_CONTENT["w"]),
                                     on_change=lambda v, idx=i: set_div_region(idx, "w", v),
-                                ).props("dense").classes("small-input")
+                                    min=1, max=9999,
+                                ).props("outlined dense").classes("flex-grow")
                                 ui.number(
                                     label="Altura",
                                     value=div.get("region", {}).get("h", DEFAULT_CONTENT["h"]),
                                     on_change=lambda v, idx=i: set_div_region(idx, "h", v),
-                                ).props("dense").classes("small-input")
+                                    min=1, max=9999,
+                                ).props("outlined dense").classes("flex-grow")
                         
-                        with ui.row().classes("form-row"):
-                            ui.label("Preenchimento").classes("form-label")
-                            fit_select = ui.select(
-                                ["Fill (corta)", "Fit (mantém tudo)"],
-                                value=(
-                                    "Fit (mantém tudo)"
-                                    if div.get("fit") == "fit"
-                                    else "Fill (corta)"
-                                ),
-                                on_change=lambda v, idx=i: set_div_fit(idx, v),
-                            ).props("outlined dense").classes("layout-input")
-                        
-                        with ui.row().classes("form-row"):
-                            ui.label("Zoom").classes("form-label")
-                            ui.slider(
-                                min=0.1,
-                                max=5.0,
-                                step=0.1,
-                                value=div.get("zoom", 1.0),
-                                on_change=lambda v, idx=i: set_div_zoom(idx, v),
-                            ).props("label-always").classes("w-full")
-                        
-                        with ui.row().classes("form-row"):
-                            ui.label("Posição X / Y (0-1)").classes("form-label")
-                            with ui.row().classes("gap-2"):
+                        # Fit, Zoom, Position in a compact row
+                        with ui.row().classes("form-row items-end gap-4"):
+                            # Fit selector
+                            with ui.column().classes("flex-grow"):
+                                ui.label("Preenchimento").classes("form-label")
+                                ui.select(
+                                    ["Fill (corta)", "Fit (mantém tudo)"],
+                                    value=(
+                                        "Fit (mantém tudo)"
+                                        if div.get("fit") == "fit"
+                                        else "Fill (corta)"
+                                    ),
+                                    on_change=lambda v, idx=i: set_div_fit(idx, v),
+                                ).props("outlined dense").classes("w-full")
+                            
+                            # Zoom slider
+                            with ui.column().classes("flex-grow"):
+                                ui.label("Zoom").classes("form-label")
+                                ui.slider(
+                                    min=0.1,
+                                    max=5.0,
+                                    step=0.1,
+                                    value=div.get("zoom", 1.0),
+                                    on_change=lambda v, idx=i: set_div_zoom(idx, v),
+                                ).props("label-always").classes("w-full")
+                            
+                            # Position X
+                            with ui.column().classes("flex-grow"):
+                                ui.label("Posição X").classes("form-label")
                                 ui.slider(
                                     min=0.0,
                                     max=1.0,
                                     step=0.05,
                                     value=div.get("pos_x", 0.5),
                                     on_change=lambda v, idx=i: set_div_pos(idx, "x", v),
-                                ).props("label-always").classes("w-1/2").tooltip("0=esquerda, 1=direita")
+                                ).props("label-always").classes("w-full").tooltip("0=esquerda, 1=direita")
+                            
+                            # Position Y
+                            with ui.column().classes("flex-grow"):
+                                ui.label("Posição Y").classes("form-label")
                                 ui.slider(
                                     min=0.0,
                                     max=1.0,
                                     step=0.05,
                                     value=div.get("pos_y", 0.5),
                                     on_change=lambda v, idx=i: set_div_pos(idx, "y", v),
-                                ).props("label-always").classes("w-1/2").tooltip("0=topo, 1=base")
+                                ).props("label-always").classes("w-full").tooltip("0=topo, 1=base")
                         
-                        with ui.row().classes("form-row"):
+                        # Action buttons row
+                        with ui.row().classes("form-row division-actions"):
+                            ui.space()
                             ui.button(
-                                "Selecionar Área no Vídeo",
+                                "Selecionar área no vídeo",
                                 icon="crop_free",
                                 on_click=lambda idx=i: pick_division_region(idx),
-                            ).props("outline size=sm").classes("pick-region-btn")
+                            ).props("outline size=sm")
+                            ui.button(
+                                "Adicionar outra",
+                                icon="add",
+                                on_click=lambda: add_division(),
+                            ).props("outline size=sm color=primary")
 
         def set_div_region(index, key, value):
             if "multi_divisions" in config and 0 <= index < len(config["multi_divisions"]):
@@ -2659,8 +2731,6 @@ with ui.column().classes("app"):
             div = config["multi_divisions"][index]
             target_region = div.get("region", DEFAULT_CONTENT)
             
-            # We'll reuse the existing pick_region mechanism but for a specific division
-            # For now, just show a message
             set_status(f"Use os controles de X, Y, Largura, Altura acima para ajustar a Divisão {index + 1}", error=False)
 
         # Initialize divisions UI
